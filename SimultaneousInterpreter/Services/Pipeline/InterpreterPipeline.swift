@@ -106,6 +106,9 @@ actor InterpreterPipeline {
     /// Translation tasks in flight (chunkIndex → task).
     private var translationTasks: [Int: Task<TranslationResult, Error>] = [:]
 
+    /// Transcription tasks in flight (chunkIndex → task) for cancellability.
+    private var transcriptionTasks: [Int: Task<Void, Never>] = [:]
+
     /// Monotonic clock reference at pipeline start.
     private var startTime: UInt64 = 0
 
@@ -154,12 +157,18 @@ actor InterpreterPipeline {
         startTime = mach_absolute_time()
         pendingTranscriptions = [:]
         translationTasks = [:]
+        transcriptionTasks = [:]
     }
 
     /// Stops the pipeline and cancels all in-flight tasks.
     func stop() {
         guard isRunning else { return }
         isRunning = false
+
+        for task in transcriptionTasks.values {
+            task.cancel()
+        }
+        transcriptionTasks.removeAll()
 
         for task in translationTasks.values {
             task.cancel()
@@ -216,15 +225,22 @@ actor InterpreterPipeline {
         // Launch transcription immediately
         await emit(.transcriptionStarted(chunkIndex: ci))
 
-        Task {
+        let transcriptionTask = Task {
             await runTranscription(chunkIndex: ci, audioSamples: chunk)
         }
+        transcriptionTasks[ci] = transcriptionTask
     }
 
     private func runTranscription(chunkIndex: Int, audioSamples: [Float]) async {
         let pcmData = floatSamplesToPCMData(audioSamples)
 
         do {
+            // Check if pipeline was stopped before we started transcription
+            guard !Task.isCancelled else {
+                transcriptionTasks.removeValue(forKey: chunkIndex)
+                return
+            }
+
             let t0 = mach_absolute_time()
             let result = try await transcriptionService.transcribe(audioData: pcmData)
             let latency = elapsedToSeconds(mach_absolute_time() - t0)
@@ -232,10 +248,12 @@ actor InterpreterPipeline {
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
             if text.isEmpty {
+                transcriptionTasks.removeValue(forKey: chunkIndex)
                 await emit(.transcriptionFailed(chunkIndex: chunkIndex, error: "Empty transcription"))
                 return
             }
 
+            transcriptionTasks.removeValue(forKey: chunkIndex)
             await emit(.transcriptionCompleted(chunkIndex: chunkIndex, text: text, latencySeconds: latency))
 
             // Emit English-ready for staged reveal — before translation completes
@@ -273,6 +291,7 @@ actor InterpreterPipeline {
             }
 
         } catch {
+            transcriptionTasks.removeValue(forKey: chunkIndex)
             await emit(.transcriptionFailed(chunkIndex: chunkIndex, error: String(describing: error)))
         }
     }

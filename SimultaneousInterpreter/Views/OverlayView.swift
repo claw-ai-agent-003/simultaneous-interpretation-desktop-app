@@ -293,6 +293,7 @@ class OverlayView: NSView {
         DispatchQueue.main.async {
             self.sessionEnded = true
             self.sessionEndTimer?.invalidate()
+            self.sessionEndTimer = nil
             self.scrollView.isHidden = true
             self.privacyRow?.isHidden = true
             self.sessionEndedLabel.stringValue = "Session ended"

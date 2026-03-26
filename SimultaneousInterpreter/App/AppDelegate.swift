@@ -165,7 +165,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
 
-            // Handle pipeline events: translationCompleted finalizes the partial with ZH text
+            // Handle all pipeline events: englishReady via setEnglishReadyHandler,
+            // translationCompleted finalizes the partial ZH, others for logging/telemetry.
             pipelineBridge?.setEventHandler { event in
                 switch event {
                 case .translationCompleted(let chunkIndex, let mandarin, _):
@@ -188,22 +189,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // setEnglishReadyHandler + translationCompleted provides better UX.
             // The full BilingualSegment is still available via the pipeline's
             // onSegment callback if a future handler needs it.
-
-            // Wire telemetry events
-            pipelineBridge?.setEventHandler { event in
-                switch event {
-                case .segmentProduced(_, let english, let mandarin, let latency):
-                    print("Segment produced (EN→ZH, \(String(format: "%.1f", latency))s): \(english.prefix(30))... → \(mandarin.prefix(20))...")
-                case .transcriptionFailed(let idx, let error):
-                    print("Transcription failed [\(idx)]: \(error)")
-                case .translationFailed(let idx, let error):
-                    print("Translation failed [\(idx)]: \(error)")
-                case .pipelineStalled(let reason):
-                    print("Pipeline stalled: \(reason)")
-                default:
-                    break
-                }
-            }
 
             print("Interpreter pipeline initialized (Whisper + NLLB-200)")
         }
