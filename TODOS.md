@@ -16,6 +16,8 @@
 
 ## Phase 1: Wedge — Mac Native App (Weeks 1-4)
 
+**Status: PHASE 1 COMPLETE** — All P1 items shipped in PR #1.
+
 ### P1.1: macOS Microphone Audio Capture
 - **What:** Capture audio via microphone input using AVAudioEngine
 - **Why:** Required for simultaneous translation. Sarah points laptop mic at speakers in meetings.
@@ -205,6 +207,18 @@
 - **Effort:** M → with CC+gstack: M
 - **Priority:** Phase 4+
 - **Depends on:** Model optimization (Phase 4)
+
+---
+
+## Completed
+
+### Phase 1 — Mac Native App
+- **P1.1 macOS Microphone Audio Capture** — **Completed:** v0.1.0.0 (2026-03-26)
+- **P1.2 MLX Whisper Integration** — **Completed:** v0.1.0.0 (2026-03-26)
+- **P1.3 NLLB-200 Translation** — **Completed:** v0.1.0.0 (2026-03-26)
+- **P1.4 Pipelined Inference Architecture** — **Completed:** v0.1.0.0 (2026-03-26)
+- **P1.5 SwiftUI Overlay Rendering** — **Completed:** v0.1.0.0 (2026-03-26)
+- **P1.6 Privacy Verification UI** — **Completed:** v0.1.0.0 (2026-03-26)
 
 ---
 
