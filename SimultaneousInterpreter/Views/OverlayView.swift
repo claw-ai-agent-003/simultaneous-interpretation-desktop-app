@@ -14,10 +14,22 @@ class OverlayView: NSView {
     private let scrollView: NSScrollView
     private let segmentsStackView: NSStackView
 
+    /// Shown when session ends.
+    private let sessionEndedLabel: NSTextField
+
     // MARK: - State
 
     private var segments: [BilingualSegment] = []
     private let maxSegments = 50
+
+    /// Active segment views keyed by chunk index for partial updates.
+    private var segmentViews: [Int: SegmentView] = [:]
+
+    /// Whether session has ended.
+    private var sessionEnded = false
+
+    /// Timer for auto-clearing session-ended state.
+    private var sessionEndTimer: Timer?
 
     // MARK: - Initialization
 
@@ -29,6 +41,7 @@ class OverlayView: NSView {
         preSessionLabel = NSTextField(labelWithString: "Point your mic at the speaker and speech will appear here.")
         scrollView = NSScrollView()
         segmentsStackView = NSStackView()
+        sessionEndedLabel = NSTextField(labelWithString: "")
 
         super.init(frame: frameRect)
         setupViews()
@@ -94,6 +107,13 @@ class OverlayView: NSView {
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
+        // Session ended label (hidden initially)
+        sessionEndedLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        sessionEndedLabel.textColor = .secondaryLabelColor
+        sessionEndedLabel.alignment = .center
+        sessionEndedLabel.isHidden = true
+        sessionEndedLabel.translatesAutoresizingMaskIntoConstraints = false
+
         // Main stack
         stackView.orientation = .vertical
         stackView.alignment = .centerX
@@ -103,6 +123,7 @@ class OverlayView: NSView {
         stackView.addArrangedSubview(preSessionLabel)
         stackView.addArrangedSubview(audioStack)
         stackView.addArrangedSubview(scrollView)
+        stackView.addArrangedSubview(sessionEndedLabel)
 
         blurView.addSubview(stackView)
 
@@ -131,30 +152,134 @@ class OverlayView: NSView {
         }
     }
 
-    /// Appends a new bilingual transcription segment.
-    func appendSegment(english: String, mandarin: String, confidence: Float) {
+    /// Shows a partial segment: English text with "翻译中..." placeholder.
+    /// The Mandarin will be filled in later via finalizePartialSegment.
+    func showPartialSegment(chunkIndex: Int, english: String, confidence: Float) {
         DispatchQueue.main.async {
+            guard !self.sessionEnded else { return }
             self.showLiveSession()
 
-            let segmentView = SegmentView(english: english, mandarin: mandarin, confidence: confidence)
+            // Remove any existing segment with the same chunkIndex (shouldn't happen)
+            if let existing = self.segmentViews[chunkIndex] {
+                self.segmentsStackView.removeArrangedSubview(existing)
+                existing.removeFromSuperview()
+            }
+
+            let segmentView = SegmentView(
+                english: english,
+                mandarin: "翻译中...",   // "Translating..." in Chinese
+                confidence: confidence,
+                isPlaceholder: true   // pulsing animation enabled
+            )
+            self.segmentViews[chunkIndex] = segmentView
             self.segmentsStackView.addArrangedSubview(segmentView)
-            self.segments.append(BilingualSegment(english: english, mandarin: mandarin, confidence: confidence))
+            self.segments.append(BilingualSegment(english: english, mandarin: "", confidence: confidence))
 
             // Trim old segments
-            while self.segments.count > self.maxSegments {
+            while self.segmentsStackView.arrangedSubviews.count > self.maxSegments {
                 if let first = self.segmentsStackView.arrangedSubviews.first {
+                    if let idx = self.segmentViews.first(where: { $0.value === first })?.key {
+                        self.segmentViews.removeValue(forKey: idx)
+                    }
                     self.segmentsStackView.removeArrangedSubview(first)
                     first.removeFromSuperview()
                     self.segments.removeFirst()
                 }
             }
 
-            // Auto-scroll to bottom
-            if let docView = self.scrollView.documentView {
-                let scrollHeight = docView.frame.height
-                docView.scroll(to: NSPoint(x: 0, y: scrollHeight))
-                self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
+            self.scrollToBottom()
+        }
+    }
+
+    /// Fills in the Mandarin translation for a previously shown partial segment.
+    func finalizePartialSegment(chunkIndex: Int, mandarin: String) {
+        DispatchQueue.main.async {
+            guard let segmentView = self.segmentViews[chunkIndex] else { return }
+            segmentView.setMandarin(mandarin)
+            // Update the segments data
+            if let idx = self.segments.firstIndex(where: { $0.english == segmentView.englishText }) {
+                self.segments[idx] = BilingualSegment(
+                    english: self.segments[idx].english,
+                    mandarin: mandarin,
+                    confidence: self.segments[idx].confidence
+                )
             }
+        }
+    }
+
+    /// Appends a fully-resolved bilingual segment (both EN and ZH known).
+    func appendSegment(english: String, mandarin: String, confidence: Float) {
+        DispatchQueue.main.async {
+            guard !self.sessionEnded else { return }
+            self.showLiveSession()
+
+            // Use a unique chunkIndex based on current count
+            let chunkIndex = self.segments.count
+
+            // Remove any existing partial for this index
+            if let existing = self.segmentViews[chunkIndex] {
+                self.segmentsStackView.removeArrangedSubview(existing)
+                existing.removeFromSuperview()
+                self.segmentViews.removeValue(forKey: chunkIndex)
+            }
+
+            let segmentView = SegmentView(english: english, mandarin: mandarin, confidence: confidence, isPlaceholder: false)
+            self.segmentViews[chunkIndex] = segmentView
+            self.segmentsStackView.addArrangedSubview(segmentView)
+            self.segments.append(BilingualSegment(english: english, mandarin: mandarin, confidence: confidence))
+
+            // Trim old segments
+            while self.segments.count > self.maxSegments {
+                if let first = self.segmentsStackView.arrangedSubviews.first {
+                    if let idx = self.segmentViews.first(where: { $0.value === first })?.key {
+                        self.segmentViews.removeValue(forKey: idx)
+                    }
+                    self.segmentsStackView.removeArrangedSubview(first)
+                    first.removeFromSuperview()
+                    self.segments.removeFirst()
+                }
+            }
+
+            self.scrollToBottom()
+        }
+    }
+
+    /// Ends the session: shows "Session ended" message, freezes final segment.
+    func endSession() {
+        DispatchQueue.main.async {
+            self.sessionEnded = true
+            self.sessionEndTimer?.invalidate()
+            self.scrollView.isHidden = true
+            self.sessionEndedLabel.stringValue = "Session ended"
+            self.sessionEndedLabel.isHidden = false
+
+            // Auto-clear after 10 seconds
+            self.sessionEndTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
+                self?.clearSessionEnded()
+            }
+        }
+    }
+
+    /// Clears the session-ended state and resets to pre-session.
+    func clearSessionEnded() {
+        DispatchQueue.main.async {
+            self.sessionEnded = false
+            self.sessionEndTimer?.invalidate()
+            self.sessionEndTimer = nil
+            self.sessionEndedLabel.isHidden = true
+            self.sessionEndedLabel.stringValue = ""
+
+            // Remove all segments
+            for (_, view) in self.segmentViews {
+                self.segmentsStackView.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            self.segmentViews.removeAll()
+            self.segments.removeAll()
+
+            // Return to pre-session state
+            self.preSessionLabel.isHidden = false
+            self.scrollView.isHidden = true
         }
     }
 
@@ -163,6 +288,14 @@ class OverlayView: NSView {
     private func showLiveSession() {
         preSessionLabel.isHidden = true
         scrollView.isHidden = false
+    }
+
+    private func scrollToBottom() {
+        if let docView = self.scrollView.documentView {
+            let scrollHeight = docView.frame.height
+            docView.scroll(to: NSPoint(x: 0, y: scrollHeight))
+            self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
+        }
     }
 }
 
@@ -177,27 +310,42 @@ struct BilingualSegment {
 // MARK: - SegmentView
 
 /// Renders a single bilingual segment: two lines, English above Mandarin.
+/// Supports placeholder mode (Mandarin "翻译中..." with pulse animation).
 class SegmentView: NSView {
 
     private let englishLabel: NSTextField
     private let mandarinLabel: NSTextField
     private let confidenceIndicator: NSView
+    private var pulseTimer: Timer?
 
-    init(english: String, mandarin: String, confidence: Float) {
+    /// The English text of this segment (stored for update matching).
+    private(set) var englishText: String = ""
+
+    init(english: String, mandarin: String, confidence: Float, isPlaceholder: Bool = false) {
         englishLabel = NSTextField(labelWithString: "")
         mandarinLabel = NSTextField(labelWithString: "")
         confidenceIndicator = NSView()
 
         super.init(frame: .zero)
 
-        setupView(english: english, mandarin: mandarin, confidence: confidence)
+        setupView(english: english, mandarin: mandarin, confidence: confidence, isPlaceholder: isPlaceholder)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func setupView(english: String, mandarin: String, confidence: Float) {
+    /// Replaces the Mandarin label text with the final translation.
+    func setMandarin(_ mandarin: String) {
+        pulseTimer?.invalidate()
+        pulseTimer = nil
+        mandarinLabel.stringValue = mandarin
+        mandarinLabel.textColor = .white
+    }
+
+    private func setupView(english: String, mandarin: String, confidence: Float, isPlaceholder: Bool) {
+        englishText = english
+
         // English line: "EN  <text>"
         let enTag = NSTextField(labelWithString: "EN ")
         enTag.font = NSFont.systemFont(ofSize: 11, weight: .bold)
@@ -222,7 +370,7 @@ class SegmentView: NSView {
 
         mandarinLabel.stringValue = mandarin
         mandarinLabel.font = NSFont.systemFont(ofSize: 14, weight: .regular)
-        mandarinLabel.textColor = .white
+        mandarinLabel.textColor = isPlaceholder ? NSColor.secondaryLabelColor : .white
         mandarinLabel.lineBreakMode = .byWordWrapping
         mandarinLabel.maximumNumberOfLines = 2
         mandarinLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -264,5 +412,24 @@ class SegmentView: NSView {
             mainStack.trailingAnchor.constraint(equalTo: trailingAnchor),
             mainStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
         ])
+
+        // Pulse animation for placeholder Mandarin
+        if isPlaceholder {
+            var phase: CGFloat = 0
+            pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] timer in
+                guard let self = self else {
+                    timer.invalidate()
+                    return
+                }
+                phase += 1
+                let dots = phase.truncatingRemainder(dividingBy: 4)
+                let text = "翻译中" + String(repeating: ".", count: Int(dots))
+                self.mandarinLabel.stringValue = text
+            }
+        }
+    }
+
+    deinit {
+        pulseTimer?.invalidate()
     }
 }

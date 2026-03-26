@@ -66,8 +66,17 @@ enum PipelineEvent: Sendable {
     case translationStarted(chunkIndex: Int)
     case translationCompleted(chunkIndex: Int, mandarin: String, latencySeconds: Double)
     case translationFailed(chunkIndex: Int, error: String)
+    case englishReady(chunkIndex: Int, english: String, confidence: Float, durationSeconds: Double)
     case segmentProduced(chunkIndex: Int, english: String, mandarin: String, endToEndLatencySeconds: Double)
     case pipelineStalled(reason: String)
+}
+
+/// A partial segment: English transcription arrived, Mandarin pending.
+struct EnglishReadyEvent: Sendable {
+    let chunkIndex: Int
+    let english: String
+    let confidence: Float
+    let durationSeconds: Double
 }
 
 // ============================================================
@@ -103,6 +112,7 @@ actor InterpreterPipeline {
     // MARK: - Callbacks (main-actor isolated)
 
     private var onSegment: (@Sendable (BilingualSegment) -> Void)?
+    private var onEnglishReady: (@Sendable (EnglishReadyEvent) -> Void)?
     private var onEvent: ((PipelineEvent) -> Void)?
 
     // MARK: - Init
@@ -127,6 +137,12 @@ actor InterpreterPipeline {
     /// Sets the event callback for telemetry (main-thread dispatched).
     func setEventHandler(_ handler: @escaping @Sendable (PipelineEvent) -> Void) {
         self.onEvent = handler
+    }
+
+    /// Sets the English-ready callback for staged reveal (main-thread dispatched).
+    /// Called immediately when Whisper transcription completes, before NLLB translation.
+    func setEnglishReadyHandler(_ handler: @escaping @Sendable (EnglishReadyEvent) -> Void) {
+        self.onEnglishReady = handler
     }
 
     /// Starts the pipeline.
@@ -222,6 +238,14 @@ actor InterpreterPipeline {
 
             await emit(.transcriptionCompleted(chunkIndex: chunkIndex, text: text, latencySeconds: latency))
 
+            // Emit English-ready for staged reveal — before translation completes
+            await emitEnglishReady(EnglishReadyEvent(
+                chunkIndex: chunkIndex,
+                english: text,
+                confidence: result.confidence,
+                durationSeconds: result.durationSeconds
+            ))
+
             // Store and chain to translation
             pendingTranscriptions[chunkIndex] = result
             await emit(.translationStarted(chunkIndex: chunkIndex))
@@ -306,6 +330,13 @@ actor InterpreterPipeline {
         }
     }
 
+    private func emitEnglishReady(_ event: EnglishReadyEvent) {
+        guard let handler = onEnglishReady else { return }
+        Task { @MainActor in
+            handler(event)
+        }
+    }
+
     private func emit(_ event: PipelineEvent) {
         guard let handler = onEvent else { return }
         Task { @MainActor in
@@ -352,5 +383,9 @@ final class InterpreterPipelineBridge: @unchecked Sendable {
 
     func setEventHandler(_ handler: @escaping @Sendable (PipelineEvent) -> Void) {
         Task { await pipeline.setEventHandler(handler) }
+    }
+
+    func setEnglishReadyHandler(_ handler: @escaping @Sendable (EnglishReadyEvent) -> Void) {
+        Task { await pipeline.setEnglishReadyHandler(handler) }
     }
 }

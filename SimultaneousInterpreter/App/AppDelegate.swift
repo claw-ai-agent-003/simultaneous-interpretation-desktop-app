@@ -155,14 +155,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             pipelineBridge = InterpreterPipelineBridge(pipeline: interpreterPipeline!)
 
-            // Wire bilingual segment output to overlay
-            pipelineBridge?.setSegmentHandler { [weak self] segment in
-                self?.overlayWindow?.showSegment(
-                    english: segment.english,
-                    mandarin: segment.mandarin,
-                    confidence: segment.confidence
+            // Wire English-ready for staged reveal: EN appears immediately, ZH fills in later
+            // ZH finalize happens via the translationCompleted event below
+            pipelineBridge?.setEnglishReadyHandler { [weak self] event in
+                self?.overlayWindow?.showPartialSegment(
+                    chunkIndex: event.chunkIndex,
+                    english: event.english,
+                    confidence: event.confidence
                 )
             }
+
+            // Handle pipeline events: translationCompleted finalizes the partial with ZH text
+            pipelineBridge?.setEventHandler { event in
+                switch event {
+                case .translationCompleted(let chunkIndex, let mandarin, _):
+                    // Staged reveal: finalize the partial English-only segment with ZH text
+                    self?.overlayWindow?.finalizePartialSegment(chunkIndex: chunkIndex, mandarin: mandarin)
+                case .segmentProduced(_, let english, let mandarin, let latency):
+                    print("Segment produced (EN→ZH, \(String(format: "%.1f", latency))s): \(english.prefix(30))... → \(mandarin.prefix(20))...")
+                case .transcriptionFailed(let idx, let error):
+                    print("Transcription failed [\(idx)]: \(error)")
+                case .translationFailed(let idx, let error):
+                    print("Translation failed [\(idx)]: \(error)")
+                case .pipelineStalled(let reason):
+                    print("Pipeline stalled: \(reason)")
+                default:
+                    break
+                }
+            }
+
+            // NOTE: setSegmentHandler intentionally left nil — staged reveal via
+            // setEnglishReadyHandler + translationCompleted provides better UX.
+            // The full BilingualSegment is still available via the pipeline's
+            // onSegment callback if a future handler needs it.
 
             // Wire telemetry events
             pipelineBridge?.setEventHandler { event in
@@ -207,6 +232,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func stopCapture() {
         audioCaptureService?.stopCapture()
         pipelineBridge?.stop()
+        overlayWindow?.endSession()
         print("Audio capture stopped")
     }
 }

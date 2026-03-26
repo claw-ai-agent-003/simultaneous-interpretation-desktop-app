@@ -41,14 +41,29 @@ class OverlayWindow: NSWindow {
         overlayView.updateAudioLevel(level)
     }
 
-    /// Appends a new audio buffer to the transcription queue.
-    func appendAudioBuffer(_ buffer: Data) {
-        // Forwarded to the transcription pipeline via AudioCaptureService callback
-        // The overlay view shows transcription results when they arrive
+    /// Shows English text immediately with "翻译中..." placeholder.
+    /// The Mandarin will be filled in later via finalizePartialSegment.
+    func showPartialSegment(chunkIndex: Int, english: String, confidence: Float) {
+        overlayView.showPartialSegment(chunkIndex: chunkIndex, english: english, confidence: confidence)
     }
 
-    /// Shows a new transcription segment (English + Mandarin).
+    /// Fills in the Mandarin translation for a previously shown partial segment.
+    func finalizePartialSegment(chunkIndex: Int, mandarin: String) {
+        overlayView.finalizePartialSegment(chunkIndex: chunkIndex, mandarin: mandarin)
+    }
+
+    /// Shows a fully-resolved bilingual segment (both EN and ZH known).
     func showSegment(english: String, mandarin: String, confidence: Float) {
         overlayView.appendSegment(english: english, mandarin: mandarin, confidence: confidence)
+    }
+
+    /// Ends the session: shows "Session ended" message, freezes final segment.
+    func endSession() {
+        overlayView.endSession()
+    }
+
+    /// Clears the session and resets to pre-session state.
+    func clearSession() {
+        overlayView.clearSessionEnded()
     }
 }
