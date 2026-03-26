@@ -8,6 +8,10 @@ class OverlayView: NSView {
 
     private let blurView: NSVisualEffectView
     private let stackView: NSStackView
+    private let privacyIndicator: NSView
+    private let privacyDot: NSView
+    private let privacyLabel: NSTextField
+    private let privacyToggle: NSSwitch
     private let audioLevelBar: NSProgressIndicator
     private let audioLevelLabel: NSTextField
     private let preSessionLabel: NSTextField
@@ -31,11 +35,22 @@ class OverlayView: NSView {
     /// Timer for auto-clearing session-ended state.
     private var sessionEndTimer: Timer?
 
+    /// Privacy mode is always active in Phase 1 (no actual network monitoring).
+    /// The toggle lets users acknowledge they understand local-only processing.
+    private var privacyModeActive = true
+
+    /// Reference to the privacy row for show/hide.
+    private var privacyRow: NSStackView?
+
     // MARK: - Initialization
 
     override init(frame frameRect: NSRect) {
         blurView = NSVisualEffectView()
         stackView = NSStackView()
+        privacyIndicator = NSView()
+        privacyDot = NSView()
+        privacyLabel = NSTextField(labelWithString: "Privacy Mode: Active")
+        privacyToggle = NSSwitch()
         audioLevelBar = NSProgressIndicator()
         audioLevelLabel = NSTextField(labelWithString: "🎤 Audio Level")
         preSessionLabel = NSTextField(labelWithString: "Point your mic at the speaker and speech will appear here.")
@@ -114,12 +129,38 @@ class OverlayView: NSView {
         sessionEndedLabel.isHidden = true
         sessionEndedLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Privacy indicator: dot + label + toggle
+        privacyDot.wantsLayer = true
+        privacyDot.layer?.cornerRadius = 5
+        privacyDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+        privacyDot.translatesAutoresizingMaskIntoConstraints = false
+
+        privacyLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        privacyLabel.textColor = .secondaryLabelColor
+
+        privacyToggle.controlSize = .small
+        privacyToggle.state = .on
+        privacyToggle.target = self
+        privacyToggle.action = #selector(privacyToggleChanged(_:))
+
+        privacyRow = NSStackView(views: [privacyDot, privacyLabel, privacyToggle])
+        privacyRow!.orientation = .horizontal
+        privacyRow!.spacing = 6
+        privacyRow!.alignment = .centerY
+        privacyRow!.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            privacyDot.widthAnchor.constraint(equalToConstant: 10),
+            privacyDot.heightAnchor.constraint(equalToConstant: 10)
+        ])
+
         // Main stack
         stackView.orientation = .vertical
         stackView.alignment = .centerX
         stackView.spacing = 12
         stackView.translatesAutoresizingMaskIntoConstraints = false
 
+        stackView.addArrangedSubview(privacyRow!)
         stackView.addArrangedSubview(preSessionLabel)
         stackView.addArrangedSubview(audioStack)
         stackView.addArrangedSubview(scrollView)
@@ -138,6 +179,9 @@ class OverlayView: NSView {
 
             scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
         ])
+
+        // Hide privacy row initially (pre-session state), show during session
+        privacyRow.isHidden = true
 
         // Hide scroll view initially (pre-session state)
         scrollView.isHidden = true
@@ -250,6 +294,7 @@ class OverlayView: NSView {
             self.sessionEnded = true
             self.sessionEndTimer?.invalidate()
             self.scrollView.isHidden = true
+            self.privacyRow?.isHidden = true
             self.sessionEndedLabel.stringValue = "Session ended"
             self.sessionEndedLabel.isHidden = false
 
@@ -277,9 +322,15 @@ class OverlayView: NSView {
             self.segmentViews.removeAll()
             self.segments.removeAll()
 
+            // Reset privacy toggle to ON (active) for fresh session
+            self.privacyModeActive = true
+            self.privacyToggle.state = .on
+            self.updatePrivacyIndicator()
+
             // Return to pre-session state
             self.preSessionLabel.isHidden = false
             self.scrollView.isHidden = true
+            self.privacyRow?.isHidden = true
         }
     }
 
@@ -288,6 +339,26 @@ class OverlayView: NSView {
     private func showLiveSession() {
         preSessionLabel.isHidden = true
         scrollView.isHidden = false
+        privacyRow?.isHidden = false
+    }
+
+    // MARK: - Privacy Toggle
+
+    @objc private func privacyToggleChanged(_ sender: NSSwitch) {
+        privacyModeActive = (sender.state == .on)
+        updatePrivacyIndicator()
+    }
+
+    private func updatePrivacyIndicator() {
+        if privacyModeActive {
+            privacyDot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+            privacyLabel.stringValue = "Privacy Mode: Active"
+            privacyLabel.textColor = .secondaryLabelColor
+        } else {
+            privacyDot.layer?.backgroundColor = NSColor.systemGray.cgColor
+            privacyLabel.stringValue = "Privacy Mode: Off"
+            privacyLabel.textColor = .tertiaryLabelColor
+        }
     }
 
     private func scrollToBottom() {
