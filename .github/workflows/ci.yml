@@ -19,8 +19,7 @@ jobs:
       - name: Install XcodeGen
         run: |
           # Install XcodeGen 0.53.1 for Xcode 15.4 compatibility (format 76)
-          VERSION=0.53.1
-          curl -sL "https://github.com/SnapKit/XcodeGen/releases/download/${VERSION}/xcodegen-${VERSION}.zip" -o xcodegen.zip
+          curl -sL "https://github.com/SnapKit/XcodeGen/releases/download/0.53.1/XcodeGen.zip" -o xcodegen.zip
           unzip -o xcodegen.zip
           chmod +x xcodegen
           ./xcodegen --version
