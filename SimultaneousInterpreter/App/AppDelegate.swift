@@ -6,9 +6,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var audioCaptureService: AudioCaptureService?
     private var overlayWindow: NSWindow?
+    private var transcriptionPipeline: TranscriptionPipeline?
+
+    // MARK: - App Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        configureAudioSession()
         setupStatusBarItem()
         setupOverlayWindow()
         requestMicrophonePermission()
@@ -16,20 +18,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         audioCaptureService?.stopCapture()
+        transcriptionPipeline?.stop()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
-    }
-
-    // MARK: - Audio Session Configuration
-
-    /// On macOS, AVAudioEngine handles audio configuration automatically.
-    /// No explicit audio session setup is needed (unlike iOS which uses AVAudioSession).
-    private func configureAudioSession() {
-        // macOS: AVAudioEngine configures itself automatically when started.
-        // The input node's format is queried directly from CoreAudio.
-        print("AudioCaptureService will use default macOS audio configuration")
     }
 
     // MARK: - Status Bar
@@ -106,12 +99,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             audioCaptureService = AudioCaptureService()
         }
 
+        // Initialize transcription pipeline (requires MLX on Apple Silicon)
+        if transcriptionPipeline == nil {
+            do {
+                // Default to Resources/Models/whisper-tiny
+                let modelPath = Bundle.main.resourceURL?
+                    .appendingPathComponent("Models/whisper-tiny", isDirectory: true)
+                    ?? URL(fileURLWithPath: "Models/whisper-tiny")
+
+                let tokenizerPath = modelPath.appendingPathComponent("tokenizer.json")
+
+                transcriptionPipeline = try TranscriptionPipeline(
+                    modelPath: modelPath,
+                    tokenizerPath: tokenizerPath
+                )
+
+                // Wire transcription results to overlay
+                transcriptionPipeline?.onTranscriptionResult = { [weak self] result in
+                    // English transcription arrives here; translation is handled by NLLB service (P1.3)
+                    self?.overlayWindow?.showSegment(
+                        english: result.text,
+                        mandarin: "[translation pending]",  // P1.3 fills this in
+                        confidence: result.confidence
+                    )
+                }
+
+                print("Transcription pipeline initialized at \(modelPath.path)")
+            } catch {
+                print("Failed to initialize transcription pipeline: \(error)")
+                print("Whisper model not found at expected path — verify model download")
+            }
+        }
+
+        // Audio level → overlay meter
         audioCaptureService?.onAudioLevelUpdate = { [weak self] level in
             self?.overlayWindow?.updateAudioLevel(level)
         }
 
+        // Audio buffer → transcription pipeline
         audioCaptureService?.onAudioBufferCapture = { [weak self] buffer in
-            self?.overlayWindow?.appendAudioBuffer(buffer)
+            self?.transcriptionPipeline?.feedAudioBuffer(buffer)
         }
 
         do {

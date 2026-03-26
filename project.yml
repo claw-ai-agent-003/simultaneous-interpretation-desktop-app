@@ -6,6 +6,11 @@ options:
   xcodeVersion: "15.0"
   generateEmptyDirectories: true
 
+packages:
+  MLX:
+    url: https://github.com/ml-explore/mlx-swift
+    version: 0.4.0
+
 settings:
   base:
     PRODUCT_NAME: SimultaneousInterpreter
@@ -23,6 +28,8 @@ targets:
     platform: macOS
     sources:
       - SimultaneousInterpreter
+    dependencies:
+      - package: MLX
     settings:
       base:
         INFOPLIST_FILE: SimultaneousInterpreter/Resources/Info.plist
@@ -30,3 +37,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.interpretation.SimultaneousInterpreter
         LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
         COMBINE_HIDPI_IMAGES: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) MLX
+        SWIFT_COMPILATION_MODE: wholemodule
