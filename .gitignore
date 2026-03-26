@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+*.swp
+*.swo
+
+# Xcode
+build/
+*.xcuserstate
+*.xcworkspace
+!*.xcworkspace/
+xcuserdata/
+*.moved-aside
+
+# Swift Package Manager
+.build/
+Packages/
+*.xcodeproj
+
+# MLX models (downloaded at build time)
+*.mlx
+*.model
+
+# Build outputs
+*.app
+*.dmg
+*.ipa
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
