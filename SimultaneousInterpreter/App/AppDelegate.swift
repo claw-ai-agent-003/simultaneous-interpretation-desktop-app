@@ -6,7 +6,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var audioCaptureService: AudioCaptureService?
     private var overlayWindow: NSWindow?
-    private var transcriptionPipeline: TranscriptionPipeline?
+    private var interpreterPipeline: InterpreterPipeline?
+    private var pipelineBridge: InterpreterPipelineBridge?
 
     // MARK: - App Lifecycle
 
@@ -18,7 +19,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         audioCaptureService?.stopCapture()
-        transcriptionPipeline?.stop()
+        pipelineBridge?.stop()
+        interpreterPipeline?.stop()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -99,46 +101,99 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             audioCaptureService = AudioCaptureService()
         }
 
-        // Initialize transcription pipeline (requires MLX on Apple Silicon)
-        if transcriptionPipeline == nil {
+        // Initialize the concurrent interpreter pipeline (P1.4)
+        if interpreterPipeline == nil {
+            // Default to Resources/Models/whisper-tiny
+            let modelPath = Bundle.main.resourceURL?
+                .appendingPathComponent("Models/whisper-tiny", isDirectory: true)
+                ?? URL(fileURLWithPath: "Models/whisper-tiny")
+
+            let tokenizerPath = modelPath.appendingPathComponent("tokenizer.json")
+
+            // Transcription service: MLX Whisper (guarded)
+            var transcriptionService: TranscriptionService?
+            #if canImport(MLX)
             do {
-                // Default to Resources/Models/whisper-tiny
-                let modelPath = Bundle.main.resourceURL?
-                    .appendingPathComponent("Models/whisper-tiny", isDirectory: true)
-                    ?? URL(fileURLWithPath: "Models/whisper-tiny")
-
-                let tokenizerPath = modelPath.appendingPathComponent("tokenizer.json")
-
-                transcriptionPipeline = try TranscriptionPipeline(
+                transcriptionService = try WhisperTranscriptionService(
                     modelPath: modelPath,
                     tokenizerPath: tokenizerPath
                 )
-
-                // Wire transcription results to overlay
-                transcriptionPipeline?.onTranscriptionResult = { [weak self] result in
-                    // English transcription arrives here; translation is handled by NLLB service (P1.3)
-                    self?.overlayWindow?.showSegment(
-                        english: result.text,
-                        mandarin: "[translation pending]",  // P1.3 fills this in
-                        confidence: result.confidence
-                    )
-                }
-
-                print("Transcription pipeline initialized at \(modelPath.path)")
             } catch {
-                print("Failed to initialize transcription pipeline: \(error)")
-                print("Whisper model not found at expected path — verify model download")
+                print("Failed to initialize Whisper transcription service: \(error)")
             }
+            #endif
+
+            // Translation service: NLLB-200 EN↔ZH (guarded)
+            var translationService: TranslationService?
+            #if canImport(MLX)
+            do {
+                translationService = try NLLBTranslationService()
+            } catch {
+                print("Failed to initialize NLLB translation service: \(error)")
+            }
+            #endif
+
+            // Both services must be available
+            guard let whisper = transcriptionService,
+                  let nllb = translationService else {
+                print("Interpreter pipeline requires both Whisper and NLLB services")
+                return
+            }
+
+            // Configure pipeline: English source → Mandarin target
+            var config = PipelineConfig()
+            config.sourceLanguage = "en"
+            config.targetLanguage = "zh"
+            config.minAudioDurationSeconds = 1.0
+            config.maxAudioDurationSeconds = 30.0
+
+            interpreterPipeline = InterpreterPipeline(
+                transcriptionService: whisper,
+                translationService: nllb,
+                config: config
+            )
+
+            pipelineBridge = InterpreterPipelineBridge(pipeline: interpreterPipeline!)
+
+            // Wire bilingual segment output to overlay
+            pipelineBridge?.setSegmentHandler { [weak self] segment in
+                self?.overlayWindow?.showSegment(
+                    english: segment.english,
+                    mandarin: segment.mandarin,
+                    confidence: segment.confidence
+                )
+            }
+
+            // Wire telemetry events
+            pipelineBridge?.setEventHandler { event in
+                switch event {
+                case .segmentProduced(_, let english, let mandarin, let latency):
+                    print("Segment produced (EN→ZH, \(String(format: "%.1f", latency))s): \(english.prefix(30))... → \(mandarin.prefix(20))...")
+                case .transcriptionFailed(let idx, let error):
+                    print("Transcription failed [\(idx)]: \(error)")
+                case .translationFailed(let idx, let error):
+                    print("Translation failed [\(idx)]: \(error)")
+                case .pipelineStalled(let reason):
+                    print("Pipeline stalled: \(reason)")
+                default:
+                    break
+                }
+            }
+
+            print("Interpreter pipeline initialized (Whisper + NLLB-200)")
         }
+
+        // Start pipeline
+        pipelineBridge?.start()
 
         // Audio level → overlay meter
         audioCaptureService?.onAudioLevelUpdate = { [weak self] level in
             self?.overlayWindow?.updateAudioLevel(level)
         }
 
-        // Audio buffer → transcription pipeline
+        // Audio buffer → interpreter pipeline (thread-safe bridge)
         audioCaptureService?.onAudioBufferCapture = { [weak self] buffer in
-            self?.transcriptionPipeline?.feedAudioBuffer(buffer)
+            self?.pipelineBridge?.feedAudioBuffer(buffer)
         }
 
         do {
@@ -151,6 +206,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopCapture() {
         audioCaptureService?.stopCapture()
+        pipelineBridge?.stop()
         print("Audio capture stopped")
     }
 }
