@@ -18,7 +18,11 @@ jobs:
 
       - name: Install XcodeGen
         run: |
-          brew install xcodegen@0.53 || brew install xcodegen
+          # Install XcodeGen 0.53.1 for Xcode 15.4 compatibility (format 76)
+          curl -sL https://github.com/SnapKit/XcodeGen/releases/download/0.53.1/xcodegen-0.53.1.tar.bz2 | tar xj
+          mv xcodegen /usr/local/bin/xcodegen
+          chmod +x /usr/local/bin/xcodegen
+          xcodegen --version
 
       - name: List available schemes
         run: xcodebuild -list -project SimultaneousInterpreter.xcodeproj 2>/dev/null || echo "Project not generated"
