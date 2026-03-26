@@ -20,8 +20,9 @@ jobs:
         run: |
           curl -sL "https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip" -o xcodegen.zip
           unzip -o xcodegen.zip
-          chmod +x xcodegen
-          ./xcodegen --version
+          chmod +x xcodegen/bin/xcodegen
+          xcodegen/bin/xcodegen --version
+          echo "$PWD/xcodegen/bin" >> $GITHUB_PATH
 
       - name: Generate Xcode project
         run: xcodegen generate
