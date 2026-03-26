@@ -11,7 +11,7 @@ options:
 packages:
   MLX:
     url: https://github.com/ml-explore/mlx-swift
-    version: 0.4.0
+    version: 0.31.1
 
 settings:
   base:
