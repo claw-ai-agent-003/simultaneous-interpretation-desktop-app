@@ -1,6 +1,6 @@
 # Privacy-First Offline Simultaneous Translation Desktop App
 
-**Status:** PLANNING — Phase 1 not started
+**Status:** PHASE 1 COMPLETE — All P1 items shipped (v0.1.0.0)
 
 **Architecture:** Native macOS App (Swift/SwiftUI) with MLX for offline AI inference
 
@@ -10,12 +10,13 @@
 
 ## Phase 1: Wedge — Mac Native App
 
-- macOS Audio Capture (AVAudioEngine, microphone input)
-- MLX Whisper Integration (English↔Mandarin)
-- NLLB Translation Pipeline
-- SwiftUI Overlay
-- Privacy Verification UI
-- Distribution Pipeline
+**Status: SHIPPED (v0.1.0.0)**
+- ✅ macOS Audio Capture (AVAudioEngine, microphone input)
+- ✅ MLX Whisper Integration (English↔Mandarin)
+- ✅ NLLB Translation Pipeline
+- ✅ SwiftUI Overlay
+- ✅ Privacy Verification UI
+- ⏳ Distribution Pipeline (P1.7 — next)
 
 ## Key Decisions
 

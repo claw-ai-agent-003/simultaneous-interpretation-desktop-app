@@ -1,0 +1,41 @@
+name: SimultaneousInterpreter
+options:
+  bundleIdPrefix: com.interpretation
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+packages:
+  MLX:
+    url: https://github.com/ml-explore/mlx-swift
+    version: 0.4.0
+
+settings:
+  base:
+    PRODUCT_NAME: SimultaneousInterpreter
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  SimultaneousInterpreter:
+    type: application
+    platform: macOS
+    sources:
+      - SimultaneousInterpreter
+    dependencies:
+      - package: MLX
+    settings:
+      base:
+        INFOPLIST_FILE: SimultaneousInterpreter/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: SimultaneousInterpreter/Resources/SimultaneousInterpreter.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.interpretation.SimultaneousInterpreter
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) MLX
+        SWIFT_COMPILATION_MODE: wholemodule
