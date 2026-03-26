@@ -7,32 +7,32 @@ on:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          curl -sL "https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip" -o xcodegen.zip
+          unzip -o xcodegen.zip
+          chmod +x xcodegen
+          ./xcodegen --version
 
       - name: Generate project
         run: xcodegen generate
 
-      - name: Build Release DMG
+      - name: Build Release
         run: |
           xcodebuild -project SimultaneousInterpreter.xcodeproj \
             -scheme SimultaneousInterpreter \
             -configuration Release \
             -destination "generic/platform=macOS" \
-            build CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO
+            build CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO | grep -E "(error:|warning:|BUILD)"
 
       - name: Create DMG
         run: |
-          # Create output directory
           mkdir -p output
-          
-          # Find built app
           APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "SimultaneousInterpreter.app" -type d 2>/dev/null | head -1)
-          
           if [ -n "$APP_PATH" ]; then
             echo "Found app at: $APP_PATH"
             hdiutil create -volname "SimultaneousInterpreter" \
@@ -43,22 +43,11 @@ jobs:
             echo "App not found - build may have failed"
           fi
 
-      - name: Upload DMG
-        uses: actions/upload-release-asset@v1
-        if: always()
-        with:
-          upload-url: ${{ github.event.inputs.upload_url }}
-          asset-path: output/SimultaneousInterpreter.dmg
-          asset-name: SimultaneousInterpreter.dmg
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Create Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: actions/create-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
-          release_name: ${{ github.ref }}
+          files: output/SimultaneousInterpreter.dmg
           draft: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       matrix:
         swift-version: ["5.9"]
@@ -18,20 +18,16 @@ jobs:
 
       - name: Install XcodeGen
         run: |
-          # Install XcodeGen 0.53.1 for Xcode 15.4 compatibility (format 76)
-          curl -sL "https://github.com/SnapKit/XcodeGen/releases/download/0.53.1/XcodeGen.zip" -o xcodegen.zip
+          curl -sL "https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip" -o xcodegen.zip
           unzip -o xcodegen.zip
           chmod +x xcodegen
           ./xcodegen --version
 
-      - name: List available schemes
-        run: xcodebuild -list -project SimultaneousInterpreter.xcodeproj 2>/dev/null || echo "Project not generated"
-
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Build
-        run: xcodebuild -project SimultaneousInterpreter.xcodeproj -scheme SimultaneousInterpreter -configuration Debug build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+      - name: Build Debug
+        run: xcodebuild -project SimultaneousInterpreter.xcodeproj -scheme SimultaneousInterpreter -configuration Debug build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO | grep -E "(error:|warning:|BUILD)"
 
       - name: Build Release
-        run: xcodebuild -project SimultaneousInterpreter.xcodeproj -scheme SimultaneousInterpreter -configuration Release build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+        run: xcodebuild -project SimultaneousInterpreter.xcodeproj -scheme SimultaneousInterpreter -configuration Release build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO | grep -E "(error:|warning:|BUILD)"
