@@ -5,6 +5,8 @@ options:
     macOS: "14.0"
   xcodeVersion: "15.0"
   generateEmptyDirectories: true
+  createIntermediateGroups: true
+  defaultConfig: Debug
 
 packages:
   MLX:

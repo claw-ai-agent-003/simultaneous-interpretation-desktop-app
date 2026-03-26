@@ -18,7 +18,7 @@ jobs:
 
       - name: Install XcodeGen
         run: |
-          which xcodegen || brew install xcodegen
+          brew install xcodegen@0.53 || brew install xcodegen
 
       - name: List available schemes
         run: xcodebuild -list -project SimultaneousInterpreter.xcodeproj 2>/dev/null || echo "Project not generated"
