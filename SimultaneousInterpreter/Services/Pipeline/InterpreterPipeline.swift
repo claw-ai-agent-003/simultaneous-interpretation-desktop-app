@@ -20,6 +20,13 @@ struct BilingualSegment: Sendable {
 
     /// Monotonic timestamp when this segment was produced.
     let producedAt: UInt64
+
+    /// Speaker label for this segment, if diarization is active.
+    var speakerLabel: SpeakerLabel?
+
+    /// Code-switching result, if code-switching processing was applied.
+    /// Contains segmentation info and protected terms for visual markup.
+    var codeSwitchingResult: CodeSwitchingResult?
 }
 
 // ============================================================
@@ -51,6 +58,20 @@ struct PipelineConfig: Sendable {
 
     /// Target end-to-end latency budget (seconds).
     var targetLatencySeconds: Double = 3.0
+
+    /// Whether speaker diarization is enabled.
+    var diarizationEnabled: Bool = true
+
+    /// Configuration for speaker diarization.
+    var diarizationConfig: DiarizationConfig = DiarizationConfig()
+
+    /// Whether code-switching handling is enabled.
+    /// When enabled, Whisper output is processed through language detection and
+    /// segmentation before NLLB translation. Mixed segments bypass NLLB.
+    var codeSwitchingEnabled: Bool = false
+
+    /// Configuration for code-switching detection and handling.
+    var codeSwitchingConfig: CodeSwitchingConfig = CodeSwitchingConfig()
 }
 
 // ============================================================
@@ -69,6 +90,13 @@ enum PipelineEvent: Sendable {
     case englishReady(chunkIndex: Int, english: String, confidence: Float, durationSeconds: Double)
     case segmentProduced(chunkIndex: Int, english: String, mandarin: String, endToEndLatencySeconds: Double)
     case pipelineStalled(reason: String)
+    case diarizationStarted(chunkIndex: Int)
+    case diarizationCompleted(chunkIndex: Int, speaker: String)
+    case diarizationFailed(chunkIndex: Int, error: String)
+    case speakerDetected(speaker: String, totalSpeakers: Int)
+    case codeSwitchingStarted(chunkIndex: Int)
+    case codeSwitchingCompleted(chunkIndex: Int, segmentsCount: Int, preservedCount: Int, latencySeconds: Double)
+    case codeSwitchingSkipped(chunkIndex: Int, reason: String)
 }
 
 /// A partial segment: English transcription arrived, Mandarin pending.
@@ -77,6 +105,8 @@ struct EnglishReadyEvent: Sendable {
     let english: String
     let confidence: Float
     let durationSeconds: Double
+    /// Speaker label for this segment, if diarization has identified a speaker.
+    var speakerLabel: SpeakerLabel?
 }
 
 // ============================================================
@@ -93,6 +123,21 @@ actor InterpreterPipeline {
     private let transcriptionService: TranscriptionService
     private let translationService: TranslationService
     private let config: PipelineConfig
+
+    // MARK: - Diarization
+
+    /// Speaker diarization service (embedding extraction + clustering).
+    private let diarizationService: DiarizationService
+
+    /// Audio samples retained for diarization, keyed by chunk index.
+    /// Freed after diarization completes for that chunk.
+    private var audioSamplesForDiarization: [Int: [Float]] = [:]
+
+    // MARK: - Code-Switching
+
+    /// Code-switching detection and segmentation service.
+    /// Injected between Whisper transcription and NLLB translation.
+    private let codeSwitchingService: CodeSwitchingService
 
     // MARK: - State
 
@@ -128,6 +173,8 @@ actor InterpreterPipeline {
         self.transcriptionService = transcriptionService
         self.translationService = translationService
         self.config = config
+        self.diarizationService = DiarizationService(config: config.diarizationConfig)
+        self.codeSwitchingService = CodeSwitchingService(config: config.codeSwitchingConfig)
     }
 
     // MARK: - Public Interface
@@ -148,6 +195,12 @@ actor InterpreterPipeline {
         self.onEnglishReady = handler
     }
 
+    /// Returns the list of currently detected speaker labels.
+    func getDetectedSpeakers() async -> [SpeakerLabel] {
+        guard config.diarizationEnabled else { return [] }
+        return await diarizationService.getAllSpeakers()
+    }
+
     /// Starts the pipeline.
     func start() {
         guard !isRunning else { return }
@@ -158,6 +211,27 @@ actor InterpreterPipeline {
         pendingTranscriptions = [:]
         translationTasks = [:]
         transcriptionTasks = [:]
+        audioSamplesForDiarization = [:]
+
+        // Start diarization service (parallel with Whisper)
+        if config.diarizationEnabled {
+            Task {
+                await diarizationService.setEventHandler { [weak self] event in
+                    guard let self = self else { return }
+                    switch event {
+                    case .speakerAssigned(let chunkIndex, let speaker):
+                        await self.emit(.diarizationCompleted(chunkIndex: chunkIndex, speaker: speaker))
+                    case .newSpeakerDetected(let speaker, let totalSpeakers):
+                        await self.emit(.speakerDetected(speaker: speaker, totalSpeakers: totalSpeakers))
+                    case .embeddingFailed(let chunkIndex, let error):
+                        await self.emit(.diarizationFailed(chunkIndex: chunkIndex, error: error))
+                    default:
+                        break
+                    }
+                }
+                await diarizationService.start()
+            }
+        }
     }
 
     /// Stops the pipeline and cancels all in-flight tasks.
@@ -175,6 +249,14 @@ actor InterpreterPipeline {
         }
         translationTasks.removeAll()
         audioBuffer = []
+        audioSamplesForDiarization.removeAll()
+
+        // Stop diarization service
+        if config.diarizationEnabled {
+            Task {
+                await diarizationService.stop()
+            }
+        }
     }
 
     /// Feeds raw 16kHz mono PCM audio data into the pipeline.
@@ -222,6 +304,13 @@ actor InterpreterPipeline {
         let chunkDuration = Double(samplesToProcess) / Double(config.sampleRate)
         await emit(.audioChunked(chunkIndex: ci, durationSeconds: chunkDuration))
 
+        // Launch diarization in parallel with Whisper (does not block transcription)
+        if config.diarizationEnabled {
+            audioSamplesForDiarization[ci] = chunk
+            await emit(.diarizationStarted(chunkIndex: ci))
+            diarizationService.processAudioChunk(audioSamples: chunk, chunkIndex: ci)
+        }
+
         // Launch transcription immediately
         await emit(.transcriptionStarted(chunkIndex: ci))
 
@@ -257,36 +346,48 @@ actor InterpreterPipeline {
             await emit(.transcriptionCompleted(chunkIndex: chunkIndex, text: text, latencySeconds: latency))
 
             // Emit English-ready for staged reveal — before translation completes
+            let speakerLabel = await diarizationService.getSpeakerLabel(forChunkIndex: chunkIndex)
+            // Free audio samples used for diarization
+            audioSamplesForDiarization.removeValue(forKey: chunkIndex)
+
             await emitEnglishReady(EnglishReadyEvent(
                 chunkIndex: chunkIndex,
                 english: text,
                 confidence: result.confidence,
-                durationSeconds: result.durationSeconds
+                durationSeconds: result.durationSeconds,
+                speakerLabel: speakerLabel
             ))
 
             // Store and chain to translation
             pendingTranscriptions[chunkIndex] = result
-            await emit(.translationStarted(chunkIndex: chunkIndex))
 
-            let transTask = Task { [weak self] () -> TranslationResult in
-                guard let self = self else { throw CancellationError() }
-                return try await self.translationService.translate(
-                    text: text,
-                    from: self.config.sourceLanguage,
-                    to: self.config.targetLanguage
-                )
-            }
+            // Code-switching processing: Whisper → Language Detection → Segmentation → NLLB
+            if config.codeSwitchingEnabled {
+                await handleCodeSwitching(chunkIndex: chunkIndex, transcription: result)
+            } else {
+                // Original flow: direct to NLLB
+                await emit(.translationStarted(chunkIndex: chunkIndex))
 
-            translationTasks[chunkIndex] = transTask
+                let transTask = Task { [weak self] () -> TranslationResult in
+                    guard let self = self else { throw CancellationError() }
+                    return try await self.translationService.translate(
+                        text: text,
+                        from: self.config.sourceLanguage,
+                        to: self.config.targetLanguage
+                    )
+                }
 
-            Task { [weak self] in
-                guard let self = self else { return }
-                do {
-                    let tResult = try await transTask.value
-                    await self.handleTranslationResult(chunkIndex: chunkIndex, translation: tResult)
-                } catch {
-                    await self.translationTasks.removeValue(forKey: chunkIndex)
-                    await self.emit(.translationFailed(chunkIndex: chunkIndex, error: String(describing: error)))
+                translationTasks[chunkIndex] = transTask
+
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    do {
+                        let tResult = try await transTask.value
+                        await self.handleTranslationResult(chunkIndex: chunkIndex, translation: tResult)
+                    } catch {
+                        await self.translationTasks.removeValue(forKey: chunkIndex)
+                        await self.emit(.translationFailed(chunkIndex: chunkIndex, error: String(describing: error)))
+                    }
                 }
             }
 
@@ -296,7 +397,130 @@ actor InterpreterPipeline {
         }
     }
 
+    // MARK: - Code-Switching Processing
+
+    /// Processes a transcription through the code-switching pipeline.
+    /// Segments that need translation are sent to NLLB individually;
+    /// preserved segments (mixed/protected) bypass NLLB entirely.
+    private func handleCodeSwitching(chunkIndex: Int, transcription: TranscriptionResult) async {
+        await emit(.codeSwitchingStarted(chunkIndex: chunkIndex))
+
+        let csResult = codeSwitchingService.process(
+            text: transcription.text,
+            sourceLanguage: config.sourceLanguage,
+            targetLanguage: config.targetLanguage
+        )
+
+        await emit(.codeSwitchingCompleted(
+            chunkIndex: chunkIndex,
+            segmentsCount: csResult.segments.count,
+            preservedCount: csResult.segmentsPreserved,
+            latencySeconds: csResult.processingLatencySeconds
+        ))
+
+        // If no segments need translation (all preserved), deliver immediately
+        if csResult.segments.allSatisfy({ $0.action == .preserve }) {
+            let reconstructed = csResult.reconstructedText
+            let finalTranslation = TranslationResult(
+                text: reconstructed,
+                sourceLanguage: config.sourceLanguage,
+                targetLanguage: config.targetLanguage,
+                confidence: transcription.confidence
+            )
+            await handleTranslationResult(
+                chunkIndex: chunkIndex,
+                translation: finalTranslation,
+                codeSwitchingResult: csResult
+            )
+            return
+        }
+
+        // Translate segments that need it, then reassemble
+        await emit(.translationStarted(chunkIndex: chunkIndex))
+
+        let transTask = Task { [weak self] () -> TranslationResult in
+            guard let self = self else { throw CancellationError() }
+            return try await self.translateCodeSwitchedSegments(
+                csResult: csResult
+            )
+        }
+
+        translationTasks[chunkIndex] = transTask
+
+        Task { [weak self] in
+            guard let self = self else { return }
+            do {
+                let tResult = try await transTask.value
+                await self.handleTranslationResult(
+                    chunkIndex: chunkIndex,
+                    translation: tResult,
+                    codeSwitchingResult: csResult
+                )
+            } catch {
+                await self.translationTasks.removeValue(forKey: chunkIndex)
+                // Fallback to original text if code-switching translation fails
+                await self.handleTranslationResult(
+                    chunkIndex: chunkIndex,
+                    translation: TranslationResult(
+                        text: transcription.text,
+                        sourceLanguage: self.config.sourceLanguage,
+                        targetLanguage: self.config.targetLanguage,
+                        confidence: transcription.confidence
+                    ),
+                    codeSwitchingResult: csResult
+                )
+            }
+        }
+    }
+
+    /// Translates only the non-preserved segments and reassembles the full text.
+    /// Preserved segments (mixed code-switching / protected terms) keep their original text.
+    private func translateCodeSwitchedSegments(
+        csResult: CodeSwitchingResult
+    ) async throws -> TranslationResult {
+        var translatedSegments: [ProcessedSegment] = []
+
+        for segment in csResult.segments {
+            switch segment.action {
+            case .preserve:
+                // No translation needed — keep original
+                var updated = segment
+                updated.translatedText = segment.original
+                translatedSegments.append(updated)
+
+            case .translate(let sourceLang, let targetLang):
+                // Send to NLLB
+                let result = try await translationService.translate(
+                    text: segment.original,
+                    from: sourceLang,
+                    to: targetLang
+                )
+                var updated = segment
+                updated.translatedText = result.text
+                translatedSegments.append(updated)
+            }
+        }
+
+        // Reassemble the full translation
+        let fullText = translatedSegments.map(\.displayText).joined(separator: " ")
+
+        return TranslationResult(
+            text: fullText,
+            sourceLanguage: config.sourceLanguage,
+            targetLanguage: config.targetLanguage,
+            confidence: 0.85  // Weighted confidence from per-segment translations
+        )
+    }
+
     private func handleTranslationResult(chunkIndex: Int, translation: TranslationResult) async {
+        await handleTranslationResult(chunkIndex: chunkIndex, translation: translation, codeSwitchingResult: nil)
+    }
+
+    private func handleTranslationResult(
+        chunkIndex: Int,
+        translation: TranslationResult,
+        codeSwitchingResult: CodeSwitchingResult?
+    ) async {
         translationTasks.removeValue(forKey: chunkIndex)
 
         guard !Task.isCancelled else { return }
@@ -314,12 +538,21 @@ actor InterpreterPipeline {
 
         let english = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Look up speaker label from diarization
+        let speakerLabel = if config.diarizationEnabled {
+            await diarizationService.getSpeakerLabel(forChunkIndex: chunkIndex)
+        } else {
+            nil
+        }
+
         let segment = BilingualSegment(
             english: english,
             mandarin: mandarin,
             confidence: transcription.confidence,
             durationSeconds: transcription.durationSeconds,
-            producedAt: mach_absolute_time()
+            producedAt: mach_absolute_time(),
+            speakerLabel: speakerLabel,
+            codeSwitchingResult: codeSwitchingResult
         )
 
         await emit(.segmentProduced(
@@ -406,5 +639,10 @@ final class InterpreterPipelineBridge: @unchecked Sendable {
 
     func setEnglishReadyHandler(_ handler: @escaping @Sendable (EnglishReadyEvent) -> Void) {
         Task { await pipeline.setEnglishReadyHandler(handler) }
+    }
+
+    /// Returns the current list of detected speaker labels.
+    func getDetectedSpeakers() async -> [SpeakerLabel] {
+        return await pipeline.getDetectedSpeakers()
     }
 }
