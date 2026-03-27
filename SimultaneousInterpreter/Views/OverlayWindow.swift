@@ -57,6 +57,12 @@ class OverlayWindow: NSWindow {
         overlayView.appendSegment(english: english, mandarin: mandarin, confidence: confidence)
     }
 
+    /// Callback for the "Export Audit Report" button.
+    var onExportAuditReport: (() -> Void)? {
+        get { overlayView.onExportAuditReport }
+        set { overlayView.onExportAuditReport = newValue }
+    }
+
     /// Ends the session: shows "Session ended" message, freezes final segment.
     func endSession() {
         overlayView.endSession()

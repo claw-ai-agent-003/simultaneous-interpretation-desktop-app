@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlayWindow: NSWindow?
     private var interpreterPipeline: InterpreterPipeline?
     private var pipelineBridge: InterpreterPipelineBridge?
+    private var attestationService: AttestationService?
 
     // MARK: - App Lifecycle
 
@@ -21,6 +22,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         audioCaptureService?.stopCapture()
         pipelineBridge?.stop()
         interpreterPipeline?.stop()
+        // Best-effort attestation finalization on app quit
+        if attestationService != nil {
+            Task {
+                try? await attestationService?.endSession()
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -50,6 +57,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupOverlayWindow() {
         overlayWindow = OverlayWindow()
         overlayWindow?.orderFront(nil)
+
+        // Wire up the "Export Audit Report" button
+        (overlayWindow as? OverlayWindow)?.onExportAuditReport = { [weak self] in
+            self?.handleExportAuditReport()
+        }
     }
 
     // MARK: - Microphone Permission
@@ -174,6 +186,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.overlayWindow?.finalizePartialSegment(chunkIndex: chunkIndex, mandarin: mandarin)
                 case .segmentProduced(_, let english, let mandarin, let latency):
                     print("Segment produced (EN→ZH, \(String(format: "%.1f", latency))s): \(english.prefix(30))... → \(mandarin.prefix(20))...")
+                    Task { await self?.attestationService?.recordSegmentProcessed() }
                 case .transcriptionFailed(let idx, let error):
                     print("Transcription failed [\(idx)]: \(error)")
                 case .translationFailed(let idx, let error):
@@ -192,6 +205,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             print("Interpreter pipeline initialized (Whisper + NLLB-200)")
         }
+
+        // Start attestation session
+        attestationService = AttestationService()
+        Task { await attestationService?.beginSession() }
 
         // Start pipeline
         pipelineBridge?.start()
@@ -218,6 +235,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         audioCaptureService?.stopCapture()
         pipelineBridge?.stop()
         overlayWindow?.endSession()
+
+        // Finalize attestation
+        if attestationService != nil {
+            Task {
+                do {
+                    let attestation = try await attestationService?.endSession()
+                    if attestation != nil {
+                        print("Attestation saved: \((attestation!.sessionID).prefix(8))...")
+                    }
+                } catch {
+                    print("Failed to finalize attestation: \(error)")
+                }
+            }
+        }
+
         print("Audio capture stopped")
+    }
+
+    // MARK: - Export Audit Report
+
+    private func handleExportAuditReport() {
+        Task { @MainActor in
+            do {
+                // Try to list saved attestations and use the most recent one
+                let files = try await attestationService?.listSavedAttestations() ?? []
+                guard let latestFile = files.last else {
+                    showAlert(title: "No Audit Data", message: "No attestation records found. Start a session first.")
+                    return
+                }
+
+                let attestation = try await attestationService?.loadAttestation(filename: latestFile)
+                guard let attestation = attestation else {
+                    showAlert(title: "Load Failed", message: "Could not load attestation file.")
+                    return
+                }
+
+                let pdfURL = try AttestationPDFGenerator.generate(from: attestation)
+                // Open the PDF in the default viewer
+                NSWorkspace.shared.open(pdfURL)
+                print("Audit PDF exported to: \(pdfURL.path)")
+
+            } catch {
+                showAlert(title: "Export Failed", message: error.localizedDescription)
+                print("Export audit report failed: \(error)")
+            }
+        }
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }

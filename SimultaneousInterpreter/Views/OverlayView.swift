@@ -21,6 +21,9 @@ class OverlayView: NSView {
     /// Shown when session ends.
     private let sessionEndedLabel: NSTextField
 
+    /// Export audit report button (shown when session ends).
+    private let exportButton: NSButton
+
     // MARK: - State
 
     private var segments: [BilingualSegment] = []
@@ -42,6 +45,9 @@ class OverlayView: NSView {
     /// Reference to the privacy row for show/hide.
     private var privacyRow: NSStackView?
 
+    /// Callback invoked when the user taps "Export Audit Report".
+    var onExportAuditReport: (() -> Void)?
+
     // MARK: - Initialization
 
     override init(frame frameRect: NSRect) {
@@ -57,6 +63,7 @@ class OverlayView: NSView {
         scrollView = NSScrollView()
         segmentsStackView = NSStackView()
         sessionEndedLabel = NSTextField(labelWithString: "")
+        exportButton = NSButton(title: "📋 Export Audit Report", target: nil, action: nil)
 
         super.init(frame: frameRect)
         setupViews()
@@ -129,6 +136,15 @@ class OverlayView: NSView {
         sessionEndedLabel.isHidden = true
         sessionEndedLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        // Export audit report button
+        exportButton.bezelStyle = .rounded
+        exportButton.controlSize = .small
+        exportButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        exportButton.isHidden = true
+        exportButton.translatesAutoresizingMaskIntoConstraints = false
+        exportButton.target = self
+        exportButton.action = #selector(exportAuditReport(_:))
+
         // Privacy indicator: dot + label + toggle
         privacyDot.wantsLayer = true
         privacyDot.layer?.cornerRadius = 5
@@ -165,6 +181,7 @@ class OverlayView: NSView {
         stackView.addArrangedSubview(audioStack)
         stackView.addArrangedSubview(scrollView)
         stackView.addArrangedSubview(sessionEndedLabel)
+        stackView.addArrangedSubview(exportButton)
 
         blurView.addSubview(stackView)
 
@@ -298,6 +315,7 @@ class OverlayView: NSView {
             self.privacyRow?.isHidden = true
             self.sessionEndedLabel.stringValue = "Session ended"
             self.sessionEndedLabel.isHidden = false
+            self.exportButton.isHidden = false
 
             // Auto-clear after 10 seconds
             self.sessionEndTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
@@ -314,6 +332,7 @@ class OverlayView: NSView {
             self.sessionEndTimer = nil
             self.sessionEndedLabel.isHidden = true
             self.sessionEndedLabel.stringValue = ""
+            self.exportButton.isHidden = true
 
             // Remove all segments
             for (_, view) in self.segmentViews {
@@ -341,6 +360,12 @@ class OverlayView: NSView {
         preSessionLabel.isHidden = true
         scrollView.isHidden = false
         privacyRow?.isHidden = false
+    }
+
+    // MARK: - Export Audit Report
+
+    @objc private func exportAuditReport(_ sender: NSButton) {
+        onExportAuditReport?()
     }
 
     // MARK: - Privacy Toggle
@@ -377,6 +402,15 @@ struct BilingualSegment {
     let english: String
     let mandarin: String
     let confidence: Float
+
+    /// Annotated English text with bold term ranges (code-switching).
+    var annotatedEnglish: AnnotatedText?
+
+    /// Annotated Mandarin text with bold term ranges (code-switching).
+    var annotatedMandarin: AnnotatedText?
+
+    /// Whether this segment was code-switched (mixed language, bypassed NLLB).
+    var isCodeSwitched: Bool = false
 }
 
 // MARK: - SegmentView
