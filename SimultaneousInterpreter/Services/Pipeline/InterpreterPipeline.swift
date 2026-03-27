@@ -372,8 +372,8 @@ actor InterpreterPipeline {
                     guard let self = self else { throw CancellationError() }
                     return try await self.translationService.translate(
                         text: text,
-                        from: self.config.sourceLanguage,
-                        to: self.config.targetLanguage
+                        from: self.config.sourceLanguageCode.bcp47,
+                        to: self.config.targetLanguageCode.bcp47
                     )
                 }
 
@@ -407,8 +407,8 @@ actor InterpreterPipeline {
 
         let csResult = codeSwitchingService.process(
             text: transcription.text,
-            sourceLanguage: config.sourceLanguage,
-            targetLanguage: config.targetLanguage
+            sourceLanguage: config.sourceLanguageCode.bcp47,
+            targetLanguage: config.targetLanguageCode.bcp47
         )
 
         await emit(.codeSwitchingCompleted(
@@ -423,8 +423,8 @@ actor InterpreterPipeline {
             let reconstructed = csResult.reconstructedText
             let finalTranslation = TranslationResult(
                 text: reconstructed,
-                sourceLanguage: config.sourceLanguage,
-                targetLanguage: config.targetLanguage,
+                sourceLanguage: config.sourceLanguageCode.bcp47,
+                targetLanguage: config.targetLanguageCode.bcp47,
                 confidence: transcription.confidence
             )
             await handleTranslationResult(
@@ -463,8 +463,8 @@ actor InterpreterPipeline {
                     chunkIndex: chunkIndex,
                     translation: TranslationResult(
                         text: transcription.text,
-                        sourceLanguage: self.config.sourceLanguage,
-                        targetLanguage: self.config.targetLanguage,
+                        sourceLanguage: self.config.sourceLanguageCode.bcp47,
+                        targetLanguage: self.config.targetLanguageCode.bcp47,
                         confidence: transcription.confidence
                     ),
                     codeSwitchingResult: csResult
@@ -506,8 +506,8 @@ actor InterpreterPipeline {
 
         return TranslationResult(
             text: fullText,
-            sourceLanguage: config.sourceLanguage,
-            targetLanguage: config.targetLanguage,
+            sourceLanguage: config.sourceLanguageCode.bcp47,
+            targetLanguage: config.targetLanguageCode.bcp47,
             confidence: 0.85  // Weighted confidence from per-segment translations
         )
     }

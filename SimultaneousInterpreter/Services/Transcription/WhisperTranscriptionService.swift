@@ -49,6 +49,19 @@ import MLXLLM
 /// local inference — no audio data leaves the device.
 final class WhisperTranscriptionService: TranscriptionService {
 
+    // MARK: - Supported Languages
+
+    /// Languages supported by the multilingual Whisper model.
+    /// Whisper auto-detects the language from audio — these are used for
+    /// fallback when detection confidence is low or the detected language
+    /// is not in the supported set.
+    static let supportedLanguages: Set<String> = ["en", "zh", "ja", "ko"]
+
+    /// Language labels for the language head in Whisper multilingual model.
+    private static let languageLabels: [Int: String] = [
+        0: "en", 1: "zh", 2: "ja", 3: "ko"
+    ]
+
     // MARK: - Properties
 
     private let model: WhisperModel
@@ -61,7 +74,11 @@ final class WhisperTranscriptionService: TranscriptionService {
 
     private var isRunning = false
 
-    var sourceLanguage: String { "en" }
+    /// Whisper multilingual auto-detects source language — report the detected language.
+    /// This is set after each transcription from the language head logits.
+    private var detectedLanguage: String = "en"
+
+    var sourceLanguage: String { detectedLanguage }
 
     // MARK: - Initialization
 
@@ -91,17 +108,24 @@ final class WhisperTranscriptionService: TranscriptionService {
         // Encode: run mel through the encoder
         let encoded = try model.encode(melSpectrogram: melSpec)
 
+        // Detect language from the encoded representation (language head)
+        let (detectedLang, langConfidence) = try model.detectLanguage(logits: encoded)
+
+        // Fallback if detected language is not supported
+        let effectiveLanguage = Self.supportedLanguages.contains(detectedLang) ? detectedLang : "en"
+        self.detectedLanguage = effectiveLanguage
+
         // Decode: autoregressive decode to text tokens
         let tokens = try model.decode(encoded: encoded, maxTokens: maxTextTokens)
 
         // Decode tokens to text using the tokenizer
-        let (text, language, confidence) = try model.detokenize(tokens: tokens)
+        let (text, _, confidence) = try model.detokenize(tokens: tokens)
 
         let durationSeconds = Double(samples.count) / sampleRate
 
         return TranscriptionResult(
             text: text,
-            language: language,
+            language: effectiveLanguage,
             confidence: confidence,
             durationSeconds: durationSeconds
         )
@@ -459,8 +483,31 @@ struct WhisperModel: Sendable {
         // Map token IDs to text using the Whisper tokenizer
         // Whisper uses a BPE-based tokenizer
         let text = tokens.map { tokenToString($0) }.joined()
-        let language = "en"  // Could be detected from language logits
+        let language = "en"  // Language is now determined via detectLanguage before decode
         return (text: text, language: language, confidence: 0.85)
+    }
+
+    /// Detects the spoken language from the encoded mel spectrogram.
+    /// Uses the language head (a linear layer over the mean-pooled encoder output).
+    /// - Parameters:
+    ///   - logits: Encoder output tensor [1, seqLen, dModel].
+    /// - Returns: (language code string, confidence 0-1).
+    func detectLanguage(logits: MLXArray) throws -> (language: String, confidence: Float) {
+        // Mean-pool the encoder output to get a single representation
+        let pooled = mlx.mean(logits, axis: 1)  // [1, dModel]
+
+        // Project through the language head
+        let languageLogits = languageHead(pooled)  // [1, numLanguages]
+
+        // Softmax over language dimension
+        let probs = mlx.softmax(languageLogits, axis: -1)
+
+        // Pick the highest-probability language
+        let maxIdx = mlx.argmax(probs[0]).item(Int.self)
+        let confidence = probs[0, maxIdx].item(Float.self)
+
+        let detectedLang = WhisperTranscriptionService.languageLabels[maxIdx] ?? "en"
+        return (language: detectedLang, confidence: confidence)
     }
 
     private func tokenToString(_ token: Int) -> String {

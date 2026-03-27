@@ -46,25 +46,73 @@ import MLX
 import MLXEngine
 
 /// MLX-based NLLB-200 translation for Apple Silicon.
-/// Supports English↔Mandarin bidirectional translation.
+/// Supports English↔Mandarin↔Japanese↔Korean bidirectional translation.
 /// All inference is local — no text data leaves the device.
+/// Uses the NLLB-200 distilled model which natively supports all target languages
+/// in a single model — no per-language model loading required.
 final class NLLBTranslationService: TranslationService {
 
     // MARK: - Constants
 
-    /// NLLB-200 language code to tokenizer ID mapping.
+    /// NLLB-200 language code to forced decoder token ID mapping.
+    /// NLLB-200 distilled supports all of these in one model.
     private static let languageToCode: [String: Int] = [
         "eng_Latn": 66804,
         "zho_Hans": 70426,
+        "jpn_Jpan": 88880,
+        "kor_Hang": 98535,
     ]
 
     /// BCP-47 to NLLB language code mapping.
     private static let bcp47ToNLLB: [String: String] = [
-        "en":   "eng_Latn",
-        "zh":   "zho_Hans",
-        "zh-CN": "zho_Hans",
+        "en":      "eng_Latn",
+        "zh":      "zho_Hans",
+        "zh-CN":   "zho_Hans",
         "zh-Hans": "zho_Hans",
+        "ja":      "jpn_Jpan",
+        "ko":      "kor_Hang",
     ]
+
+    /// Supported LanguageCode enum to NLLB token ID (convenience lookup).
+    private static let languageCodeToTokenID: [LanguageCode: Int] = [
+        .en:  66804,
+        .zh:  70426,
+        .ja:  88880,
+        .ko:  98535,
+    ]
+
+    // MARK: - Model Cache
+
+    /// NLLB-200 distilled is a single multilingual model.
+    /// We hold one model instance and route internally by target language token.
+    /// This avoids any repeated loading — the same model handles en, zh, ja, ko.
+    private static var sharedModelInstance: (model: NLLBModel, tokenizer: NLLBTokenizer)?
+    private static let modelLoadLock = NSLock()
+
+    /// Loads (or returns cached) the NLLB multilingual model and tokenizer.
+    private static func getModelInstance(
+        modelPath: URL,
+        tokenizerPath: URL
+    ) throws -> (model: NLLBModel, tokenizer: NLLBTokenizer) {
+        modelLoadLock.lock()
+        defer { modelLoadLock.unlock() }
+
+        if let cached = sharedModelInstance {
+            return cached
+        }
+
+        let model = try NLLBModel.load(modelPath: modelPath)
+        let tokenizer = try NLLBTokenizer(tokenizerPath: tokenizerPath)
+        sharedModelInstance = (model, tokenizer)
+        return (model, tokenizer)
+    }
+
+    /// Clears the cached model instance. Useful for testing or memory management.
+    static func clearModelCache() {
+        modelLoadLock.lock()
+        defer { modelLoadLock.unlock() }
+        sharedModelInstance = nil
+    }
 
     // MARK: - Properties
 
@@ -84,16 +132,21 @@ final class NLLBTranslationService: TranslationService {
     ///   - tokenizerPath: Path to NLLB tokenizer.json.
     ///   - sourceLanguage: BCP-47 source language tag (e.g. "en").
     ///   - targetLanguage: BCP-47 target language tag (e.g. "zh").
+    ///   - Note: The NLLB-200 distilled model is shared across all target languages.
+    ///     A new instance is created per source/target pair, but all instances
+    ///     share the same underlying model via a process-wide cache.
     init(
         modelPath: URL,
         tokenizerPath: URL,
         sourceLanguage: String = "en",
         targetLanguage: String = "zh"
     ) throws {
-        self.model = try NLLBModel.load(modelPath: modelPath)
-        self.tokenizer = try NLLBTokenizer(tokenizerPath: tokenizerPath)
+        let instance = try Self.getModelInstance(modelPath: modelPath, tokenizerPath: tokenizerPath)
+        self.model = instance.model
+        self.tokenizer = instance.tokenizer
         self.sourceLanguage = sourceLanguage
         self.targetLanguage = targetLanguage
+        self.isRunning = true
     }
 
     // MARK: - TranslationService
@@ -134,6 +187,47 @@ final class NLLBTranslationService: TranslationService {
             sourceLanguage: sourceLanguage,
             targetLanguage: targetLanguage,
             confidence: 0.92  // NLLB distilled produces high-confidence translations
+        )
+    }
+
+    /// Convenience translate method using LanguageCode enum.
+    /// Routes to the same multilingual NLLB model using the target's forced decoder token.
+    /// - Parameters:
+    ///   - text: The source text to translate.
+    ///   - target: The target language code.
+    /// - Returns: TranslationResult with translated text.
+    func translate(text: String, to target: LanguageCode) async throws -> TranslationResult {
+        guard isRunning else {
+            throw TranslationError.serviceNotRunning
+        }
+
+        // NLLB-200 distilled: one model, all target languages
+        // Only the forced decoder token changes to select the output language
+        let forcedTargetToken = Self.languageCodeToTokenID[target] ?? 66804
+        let tgtCode = target.nllbCode
+
+        // Tokenize with source language prefix
+        let srcCode = Self.bcp47ToNLLB[sourceLanguage] ?? sourceLanguage
+        let srcTokenIDs = try tokenizer.encode(text: text, language: srcCode)
+        let inputTokens = srcTokenIDs + [forcedTargetToken]
+
+        // Encode
+        let encoderOutput = try model.encode(tokenIDs: inputTokens)
+
+        // Decode
+        let outputTokenIDs = try model.decode(
+            encoderOutput: encoderOutput,
+            targetLanguageCode: forcedTargetToken,
+            maxTokens: 256
+        )
+
+        let translatedText = try tokenizer.decode(tokenIDs: outputTokenIDs)
+
+        return TranslationResult(
+            text: translatedText,
+            sourceLanguage: sourceLanguage,
+            targetLanguage: target.bcp47,
+            confidence: 0.92
         )
     }
 

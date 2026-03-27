@@ -1,0 +1,82 @@
+{
+  "version": "1.0",
+  "supportedPairs": [
+    {
+      "source": "en",
+      "target": "zh",
+      "label": "EN → 中文",
+      "description": "English → Mandarin Chinese"
+    },
+    {
+      "source": "zh",
+      "target": "en",
+      "label": "中文 → EN",
+      "description": "Mandarin Chinese → English"
+    },
+    {
+      "source": "en",
+      "target": "ja",
+      "label": "EN → 日本語",
+      "description": "English → Japanese"
+    },
+    {
+      "source": "ja",
+      "target": "en",
+      "label": "日本語 → EN",
+      "description": "Japanese → English"
+    },
+    {
+      "source": "en",
+      "target": "ko",
+      "label": "EN → 한국어",
+      "description": "English → Korean"
+    },
+    {
+      "source": "ko",
+      "target": "en",
+      "label": "한국어 → EN",
+      "description": "Korean → English"
+    }
+  ],
+  "defaultPairIndex": 0,
+  "languages": {
+    "en": {
+      "bcp47": "en",
+      "nllbCode": "eng_Latn",
+      "nllbTokenID": 66804,
+      "displayName": "English",
+      "shortLabel": "EN",
+      "whisperPromptTag": ">>en<<",
+      "isActive": true
+    },
+    "zh": {
+      "bcp47": "zh",
+      "nllbCode": "zho_Hans",
+      "nllbTokenID": 70426,
+      "displayName": "中文",
+      "shortLabel": "中",
+      "whisperPromptTag": ">>zh<<",
+      "isActive": true
+    },
+    "ja": {
+      "bcp47": "ja",
+      "nllbCode": "jpn_Jpan",
+      "nllbTokenID": 88880,
+      "displayName": "日本語",
+      "shortLabel": "日",
+      "whisperPromptTag": ">>ja<<",
+      "isActive": true
+    },
+    "ko": {
+      "bcp47": "ko",
+      "nllbCode": "kor_Hang",
+      "nllbTokenID": 98535,
+      "displayName": "한국어",
+      "shortLabel": "한",
+      "whisperPromptTag": ">>ko<<",
+      "isActive": true
+    }
+  },
+  "extensible": true,
+  "maxLanguages": 5
+}

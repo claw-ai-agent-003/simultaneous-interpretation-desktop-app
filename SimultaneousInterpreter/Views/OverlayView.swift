@@ -27,6 +27,12 @@ class OverlayView: NSView {
     /// Panic button for human interpreter fallback (P3.3).
     private(set) var panicButton: InterpreterPanicButton?
 
+    /// Language pair switching popup button.
+    private let languageSwitcher: NSPopUpButton
+
+    /// Toolbar row containing language switcher and privacy controls.
+    private var toolbarRow: NSStackView?
+
     // MARK: - State
 
     private var segments: [BilingualSegment] = []
@@ -44,12 +50,21 @@ class OverlayView: NSView {
     /// Callback invoked when the user taps "Export Audit Report".
     var onExportAuditReport: (() -> Void)?
 
+    /// Callback invoked when the user selects a new language pair.
+    var onLanguagePairChanged: ((LanguagePair) -> Void)?
+
     /// Privacy mode is always active in Phase 1 (no actual network monitoring).
     /// The toggle lets users acknowledge they understand local-only processing.
     private var privacyModeActive = true
 
     /// Reference to the privacy row for show/hide.
     private var privacyRow: NSStackView?
+
+    /// Current language pair for display labels.
+    private var currentLanguagePair: LanguagePair = LanguagePair(source: .en, target: .zh)
+
+    /// Supported language pairs for the switcher popup.
+    private var availablePairs: [LanguagePair] = SupportedLanguages.default.pairs
 
     // MARK: - Initialization
 
@@ -67,6 +82,7 @@ class OverlayView: NSView {
         segmentsStackView = NSStackView()
         sessionEndedLabel = NSTextField(labelWithString: "")
         exportAuditButton = NSButton(title: "📄 Export Audit Report", target: nil, action: nil)
+        languageSwitcher = NSPopUpButton(frame: .zero, pullsDown: false)
 
         super.init(frame: frameRect)
         setupViews()
@@ -172,13 +188,40 @@ class OverlayView: NSView {
             privacyDot.heightAnchor.constraint(equalToConstant: 10)
         ])
 
+        // === Language Switcher ===
+        // NSPopUpButton for selecting the active language pair.
+        // Shown only during live sessions.
+        languageSwitcher.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        languageSwitcher.controlSize = .small
+        languageSwitcher.target = self
+        languageSwitcher.action = #selector(languageSwitcherChanged(_:))
+        populateLanguageSwitcher()
+
+        let langLabel = NSTextField(labelWithString: "语言:")
+        langLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        langLabel.textColor = .secondaryLabelColor
+
+        let langRow = NSStackView(views: [langLabel, languageSwitcher])
+        langRow.orientation = .horizontal
+        langRow.spacing = 6
+        langRow.alignment = .centerY
+        langRow.translatesAutoresizingMaskIntoConstraints = false
+
+        // Toolbar row: language switcher on the left, privacy on the right
+        toolbarRow = NSStackView(views: [langRow, privacyRow!])
+        toolbarRow!.orientation = .horizontal
+        toolbarRow!.spacing = 12
+        toolbarRow!.alignment = .centerY
+        toolbarRow!.distribution = .equalSpacing
+        toolbarRow!.translatesAutoresizingMaskIntoConstraints = false
+
         // Main stack
         stackView.orientation = .vertical
         stackView.alignment = .centerX
         stackView.spacing = 12
         stackView.translatesAutoresizingMaskIntoConstraints = false
 
-        stackView.addArrangedSubview(privacyRow!)
+        stackView.addArrangedSubview(toolbarRow!)
         stackView.addArrangedSubview(preSessionLabel)
         stackView.addArrangedSubview(audioStack)
         stackView.addArrangedSubview(scrollView)
@@ -199,8 +242,8 @@ class OverlayView: NSView {
             scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
         ])
 
-        // Hide privacy row initially (pre-session state), show during session
-        privacyRow.isHidden = true
+        // Hide toolbar row initially (pre-session state), show during session
+        toolbarRow?.isHidden = true
 
         // Hide scroll view initially (pre-session state)
         scrollView.isHidden = true
@@ -228,8 +271,8 @@ class OverlayView: NSView {
         }
     }
 
-    /// Shows a partial segment: English text with "翻译中..." placeholder.
-    /// The Mandarin will be filled in later via finalizePartialSegment.
+    /// Shows a partial segment: source text with placeholder.
+    /// The target translation will be filled in later via finalizePartialSegment.
     func showPartialSegment(chunkIndex: Int, english: String, confidence: Float, speakerLabel: SpeakerLabel? = nil) {
         DispatchQueue.main.async {
             guard !self.sessionEnded else { return }
@@ -242,8 +285,9 @@ class OverlayView: NSView {
             }
 
             let segmentView = SegmentView(
-                english: english,
-                mandarin: "翻译中...",   // "Translating..." in Chinese
+                languagePair: self.currentLanguagePair,
+                sourceText: english,
+                targetText: "",        // Empty at first, filled in later
                 confidence: confidence,
                 isPlaceholder: true,   // pulsing animation enabled
                 speakerLabel: speakerLabel
@@ -268,13 +312,13 @@ class OverlayView: NSView {
         }
     }
 
-    /// Fills in the Mandarin translation for a previously shown partial segment.
+    /// Fills in the target language translation for a previously shown partial segment.
     func finalizePartialSegment(chunkIndex: Int, mandarin: String) {
         DispatchQueue.main.async {
             guard let segmentView = self.segmentViews[chunkIndex] else { return }
-            segmentView.setMandarin(mandarin)
+            segmentView.setTargetText(mandarin)
             // Update the segments data
-            if let idx = self.segments.firstIndex(where: { $0.english == segmentView.englishText }) {
+            if let idx = self.segments.firstIndex(where: { $0.english == segmentView.sourceText }) {
                 self.segments[idx] = BilingualSegment(
                     english: self.segments[idx].english,
                     mandarin: mandarin,
@@ -284,7 +328,7 @@ class OverlayView: NSView {
         }
     }
 
-    /// Fills in the Mandarin translation with code-switching markup.
+    /// Fills in the target language translation with code-switching markup.
     /// Protected terms are highlighted in bold, mixed segments are visually distinguished.
     func finalizePartialSegment(
         chunkIndex: Int,
@@ -294,8 +338,8 @@ class OverlayView: NSView {
     ) {
         DispatchQueue.main.async {
             guard let segmentView = self.segmentViews[chunkIndex] else { return }
-            segmentView.setMandarin(mandarin, protectedTerms: protectedTerms, isMixed: hasCodeSwitching)
-            if let idx = self.segments.firstIndex(where: { $0.english == segmentView.englishText }) {
+            segmentView.setTargetText(mandarin, protectedTerms: protectedTerms, isMixed: hasCodeSwitching)
+            if let idx = self.segments.firstIndex(where: { $0.english == segmentView.sourceText }) {
                 self.segments[idx] = BilingualSegment(
                     english: self.segments[idx].english,
                     mandarin: mandarin,
@@ -305,7 +349,7 @@ class OverlayView: NSView {
         }
     }
 
-    /// Appends a fully-resolved bilingual segment (both EN and ZH known).
+    /// Appends a fully-resolved bilingual segment (both source and target known).
     func appendSegment(english: String, mandarin: String, confidence: Float, speakerLabel: SpeakerLabel? = nil) {
         DispatchQueue.main.async {
             guard !self.sessionEnded else { return }
@@ -321,7 +365,14 @@ class OverlayView: NSView {
                 self.segmentViews.removeValue(forKey: chunkIndex)
             }
 
-            let segmentView = SegmentView(english: english, mandarin: mandarin, confidence: confidence, isPlaceholder: false, speakerLabel: speakerLabel)
+            let segmentView = SegmentView(
+                languagePair: self.currentLanguagePair,
+                sourceText: english,
+                targetText: mandarin,
+                confidence: confidence,
+                isPlaceholder: false,
+                speakerLabel: speakerLabel
+            )
             self.segmentViews[chunkIndex] = segmentView
             self.segmentsStackView.addArrangedSubview(segmentView)
             self.segments.append(BilingualSegment(english: english, mandarin: mandarin, confidence: confidence, speakerLabel: speakerLabel))
@@ -349,7 +400,7 @@ class OverlayView: NSView {
             self.sessionEndTimer?.invalidate()
             self.sessionEndTimer = nil
             self.scrollView.isHidden = true
-            self.privacyRow?.isHidden = true
+            self.toolbarRow?.isHidden = true
             self.panicButton?.isHidden = true  // Hide panic button when session ends
             self.sessionEndedLabel.stringValue = "Session ended"
             self.sessionEndedLabel.isHidden = false
@@ -388,7 +439,7 @@ class OverlayView: NSView {
             // Return to pre-session state
             self.preSessionLabel.isHidden = false
             self.scrollView.isHidden = true
-            self.privacyRow?.isHidden = true
+            self.toolbarRow?.isHidden = true
             self.panicButton?.isHidden = true  // Reset panic button
         }
     }
@@ -398,7 +449,7 @@ class OverlayView: NSView {
     private func showLiveSession() {
         preSessionLabel.isHidden = true
         scrollView.isHidden = false
-        privacyRow?.isHidden = false
+        toolbarRow?.isHidden = false
         panicButton?.isHidden = false  // Show interpreter panic button during session
     }
 
@@ -426,6 +477,42 @@ class OverlayView: NSView {
         }
     }
 
+    // MARK: - Language Switcher
+
+    /// Populates the language switcher popup with available language pairs.
+    private func populateLanguageSwitcher() {
+        languageSwitcher.removeAllItems()
+        for (index, pair) in availablePairs.enumerated() {
+            languageSwitcher.addItem(withTitle: pair.displayLabel)
+            languageSwitcher.item(at: index)?.tag = index
+        }
+        // Select default
+        languageSwitcher.selectItem(at: SupportedLanguages.default.defaultPairIndex)
+        currentLanguagePair = availablePairs[SupportedLanguages.default.defaultPairIndex]
+    }
+
+    /// Called when the user selects a new language pair from the switcher.
+    @objc private func languageSwitcherChanged(_ sender: NSPopUpButton) {
+        let index = sender.indexOfSelectedItem
+        guard index >= 0 && index < availablePairs.count else { return }
+        let newPair = availablePairs[index]
+        guard newPair != currentLanguagePair else { return }
+        currentLanguagePair = newPair
+        onLanguagePairChanged?(newPair)
+    }
+
+    /// Updates the available language pairs and refreshes the switcher.
+    /// - Parameter pairs: New list of language pairs to display.
+    func updateLanguagePairs(_ pairs: [LanguagePair]) {
+        availablePairs = pairs
+        populateLanguageSwitcher()
+    }
+
+    /// Returns the currently selected language pair.
+    func getCurrentLanguagePair() -> LanguagePair {
+        currentLanguagePair
+    }
+
     private func scrollToBottom() {
         if let docView = self.scrollView.documentView {
             let scrollHeight = docView.frame.height
@@ -435,35 +522,37 @@ class OverlayView: NSView {
     }
 }
 
-// MARK: - BilingualSegment
-
-struct BilingualSegment {
-    let english: String
-    let mandarin: String
-    let confidence: Float
-    /// Speaker label for this segment, if diarization identified a speaker.
-    var speakerLabel: SpeakerLabel?
-}
-
 // MARK: - SegmentView
 
-/// Renders a single bilingual segment: speaker label + two lines (EN, ZH).
-/// Supports placeholder mode (Mandarin "翻译中..." with pulse animation).
+/// Renders a single bilingual segment: language tag + source text, language tag + target text.
+/// Supports placeholder mode with pulsing animation.
+/// Dynamic language labels: EN, 中, 日, 한 based on the active language pair.
 class SegmentView: NSView {
 
-    private let englishLabel: NSTextField
-    private let mandarinLabel: NSTextField
+    private let sourceLabel: NSTextField
+    private let targetLabel: NSTextField
     private let confidenceIndicator: NSView
     private let speakerTagView: NSTextField?
     private var pulseTimer: Timer?
 
-    /// The English text of this segment (stored for update matching).
-    private(set) var englishText: String = ""
+    /// The source text of this segment (stored for update matching).
+    private(set) var sourceText: String = ""
 
-    init(english: String, mandarin: String, confidence: Float, isPlaceholder: Bool = false, speakerLabel: SpeakerLabel? = nil) {
-        englishLabel = NSTextField(labelWithString: "")
-        mandarinLabel = NSTextField(labelWithString: "")
-        confidenceIndicator = NSView()
+    /// Language pair used for display labels and colors.
+    private let languagePair: LanguagePair
+
+    init(
+        languagePair: LanguagePair,
+        sourceText: String,
+        targetText: String,
+        confidence: Float,
+        isPlaceholder: Bool = false,
+        speakerLabel: SpeakerLabel? = nil
+    ) {
+        self.languagePair = languagePair
+        self.sourceLabel = NSTextField(labelWithString: "")
+        self.targetLabel = NSTextField(labelWithString: "")
+        self.confidenceIndicator = NSView()
 
         // Create speaker tag label if a speaker label is provided
         if let label = speakerLabel {
@@ -484,41 +573,41 @@ class SegmentView: NSView {
 
         super.init(frame: .zero)
 
-        setupView(english: english, mandarin: mandarin, confidence: confidence, isPlaceholder: isPlaceholder)
+        setupView(sourceText: sourceText, targetText: targetText, confidence: confidence, isPlaceholder: isPlaceholder)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// Replaces the Mandarin label text with the final translation.
-    func setMandarin(_ mandarin: String) {
-        setMandarin(mandarin, protectedTerms: [], isMixed: false)
+    /// Replaces the target label text with the final translation.
+    func setTargetText(_ target: String) {
+        setTargetText(target, protectedTerms: [], isMixed: false)
     }
 
-    /// Replaces the Mandarin label text with code-switching markup.
+    /// Replaces the target label text with code-switching markup.
     /// - Parameters:
-    ///   - mandarin: The translated text.
+    ///   - target: The translated text.
     ///   - protectedTerms: Terms that should be highlighted in bold/special color.
     ///   - isMixed: Whether this segment contains code-switching (visual distinction).
-    func setMandarin(_ mandarin: String, protectedTerms: [String], isMixed: Bool) {
+    func setTargetText(_ target: String, protectedTerms: [String], isMixed: Bool) {
         pulseTimer?.invalidate()
         pulseTimer = nil
 
         if protectedTerms.isEmpty && !isMixed {
             // Simple case: no markup needed
-            mandarinLabel.stringValue = mandarin
-            mandarinLabel.textColor = .white
+            targetLabel.stringValue = target
+            targetLabel.textColor = .white
         } else if let attributed = Self.attributedString(
-            text: mandarin,
+            text: target,
             protectedTerms: protectedTerms,
             isMixed: isMixed
         ) {
-            mandarinLabel.attributedStringValue = attributed
-            mandarinLabel.textColor = .white  // Fallback; attributed string sets per-range color
+            targetLabel.attributedStringValue = attributed
+            targetLabel.textColor = .white  // Fallback; attributed string sets per-range color
         } else {
-            mandarinLabel.stringValue = mandarin
-            mandarinLabel.textColor = isMixed
+            targetLabel.stringValue = target
+            targetLabel.textColor = isMixed
                 ? NSColor(red: 0.7, green: 0.85, blue: 1.0, alpha: 1.0)  // Light blue for mixed
                 : .white
         }
@@ -568,42 +657,43 @@ class SegmentView: NSView {
         return result
     }
 
-    private func setupView(english: String, mandarin: String, confidence: Float, isPlaceholder: Bool) {
-        englishText = english
+    private func setupView(sourceText: String, targetText: String, confidence: Float, isPlaceholder: Bool) {
+        self.sourceText = sourceText
 
-        // English line: "EN  <text>"
-        let enTag = NSTextField(labelWithString: "EN ")
-        enTag.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-        enTag.textColor = NSColor(red: 0.2, green: 0.6, blue: 0.9, alpha: 1.0) // Light blue
+        // Source language line: e.g. "EN  <text>" or "中  <text>"
+        let sourceLangTag = NSTextField(labelWithString: languagePair.source.shortLabel + " ")
+        sourceLangTag.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        sourceLangTag.textColor = languageColor(for: languagePair.source)
 
-        englishLabel.stringValue = english
-        englishLabel.font = NSFont.systemFont(ofSize: 14, weight: .regular)
-        englishLabel.textColor = .white
-        englishLabel.lineBreakMode = .byWordWrapping
-        englishLabel.maximumNumberOfLines = 2
-        englishLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sourceLabel.stringValue = sourceText
+        sourceLabel.font = NSFont.systemFont(ofSize: 14, weight: .regular)
+        sourceLabel.textColor = .white
+        sourceLabel.lineBreakMode = .byWordWrapping
+        sourceLabel.maximumNumberOfLines = 2
+        sourceLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let enRow = NSStackView(views: [enTag, englishLabel])
-        enRow.orientation = .horizontal
-        enRow.alignment = .firstBaseline
-        enRow.spacing = 6
+        let sourceRow = NSStackView(views: [sourceLangTag, sourceLabel])
+        sourceRow.orientation = .horizontal
+        sourceRow.alignment = .firstBaseline
+        sourceRow.spacing = 6
 
-        // Mandarin line: "中  <text>"
-        let zhTag = NSTextField(labelWithString: "中 ")
-        zhTag.font = NSFont.systemFont(ofSize: 11, weight: .bold)
-        zhTag.textColor = NSColor(red: 0.9, green: 0.5, blue: 0.2, alpha: 1.0) // Orange
+        // Target language line: e.g. "中  <text>" or "日  <text>" or "한  <text>"
+        let targetLangTag = NSTextField(labelWithString: languagePair.target.shortLabel + " ")
+        targetLangTag.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        targetLangTag.textColor = languageColor(for: languagePair.target)
 
-        mandarinLabel.stringValue = mandarin
-        mandarinLabel.font = NSFont.systemFont(ofSize: 14, weight: .regular)
-        mandarinLabel.textColor = isPlaceholder ? NSColor.secondaryLabelColor : .white
-        mandarinLabel.lineBreakMode = .byWordWrapping
-        mandarinLabel.maximumNumberOfLines = 2
-        mandarinLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let placeholder = isPlaceholder ? Self.translatingPlaceholder(for: languagePair.target) : targetText
+        targetLabel.stringValue = placeholder
+        targetLabel.font = NSFont.systemFont(ofSize: 14, weight: .regular)
+        targetLabel.textColor = isPlaceholder ? NSColor.secondaryLabelColor : .white
+        targetLabel.lineBreakMode = .byWordWrapping
+        targetLabel.maximumNumberOfLines = 2
+        targetLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let zhRow = NSStackView(views: [zhTag, mandarinLabel])
-        zhRow.orientation = .horizontal
-        zhRow.alignment = .firstBaseline
-        zhRow.spacing = 6
+        let targetRow = NSStackView(views: [targetLangTag, targetLabel])
+        targetRow.orientation = .horizontal
+        targetRow.alignment = .firstBaseline
+        targetRow.spacing = 6
 
         // Confidence indicator dot
         let dotSize: CGFloat = 6
@@ -628,8 +718,8 @@ class SegmentView: NSView {
         let textStack = NSStackView(orientation: .vertical)
         textStack.spacing = 2
         textStack.alignment = .leading
-        textStack.addArrangedSubview(enRow)
-        textStack.addArrangedSubview(zhRow)
+        textStack.addArrangedSubview(sourceRow)
+        textStack.addArrangedSubview(targetRow)
 
         let mainStack: NSStackView
         if let speakerTag = speakerTagView {
@@ -661,7 +751,7 @@ class SegmentView: NSView {
             mainStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2)
         ])
 
-        // Pulse animation for placeholder Mandarin
+        // Pulse animation for placeholder target language
         if isPlaceholder {
             var phase: CGFloat = 0
             pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] timer in
@@ -671,9 +761,38 @@ class SegmentView: NSView {
                 }
                 phase += 1
                 let dots = phase.truncatingRemainder(dividingBy: 4)
-                let text = "翻译中" + String(repeating: ".", count: Int(dots))
-                self.mandarinLabel.stringValue = text
+                let text = Self.translatingPlaceholder(for: self.languagePair.target) + String(repeating: ".", count: Int(dots))
+                self.targetLabel.stringValue = text
             }
+        }
+    }
+
+    // MARK: - Language Helpers
+
+    /// Returns the color associated with a language for display in segment labels.
+    private func languageColor(for lang: LanguageCode) -> NSColor {
+        switch lang {
+        case .en:
+            return NSColor(red: 0.2, green: 0.6, blue: 0.9, alpha: 1.0)  // Light blue
+        case .zh:
+            return NSColor(red: 0.9, green: 0.5, blue: 0.2, alpha: 1.0)   // Orange
+        case .ja:
+            return NSColor(red: 0.85, green: 0.3, blue: 0.7, alpha: 1.0)  // Pink/magenta
+        case .ko:
+            return NSColor(red: 0.3, green: 0.7, blue: 0.6, alpha: 1.0)   // Teal
+        case .ext:
+            return NSColor.systemGray
+        }
+    }
+
+    /// Returns the "translating..." placeholder text for the given target language.
+    private static func translatingPlaceholder(for lang: LanguageCode) -> String {
+        switch lang {
+        case .en:  return "Translating"
+        case .zh:  return "翻译中"
+        case .ja:  return "翻訳中"
+        case .ko:  return "번역 중"
+        case .ext: return "..."
         }
     }
 
