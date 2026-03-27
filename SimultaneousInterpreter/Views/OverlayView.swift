@@ -21,8 +21,11 @@ class OverlayView: NSView {
     /// Shown when session ends.
     private let sessionEndedLabel: NSTextField
 
-    /// Export audit report button (shown when session ends).
-    private let exportButton: NSButton
+    /// Button to export the privacy audit report as PDF.
+    private let exportAuditButton: NSButton
+
+    /// Panic button for human interpreter fallback (P3.3).
+    private(set) var panicButton: InterpreterPanicButton?
 
     // MARK: - State
 
@@ -38,15 +41,15 @@ class OverlayView: NSView {
     /// Timer for auto-clearing session-ended state.
     private var sessionEndTimer: Timer?
 
+    /// Callback invoked when the user taps "Export Audit Report".
+    var onExportAuditReport: (() -> Void)?
+
     /// Privacy mode is always active in Phase 1 (no actual network monitoring).
     /// The toggle lets users acknowledge they understand local-only processing.
     private var privacyModeActive = true
 
     /// Reference to the privacy row for show/hide.
     private var privacyRow: NSStackView?
-
-    /// Callback invoked when the user taps "Export Audit Report".
-    var onExportAuditReport: (() -> Void)?
 
     // MARK: - Initialization
 
@@ -63,7 +66,7 @@ class OverlayView: NSView {
         scrollView = NSScrollView()
         segmentsStackView = NSStackView()
         sessionEndedLabel = NSTextField(labelWithString: "")
-        exportButton = NSButton(title: "📋 Export Audit Report", target: nil, action: nil)
+        exportAuditButton = NSButton(title: "📄 Export Audit Report", target: nil, action: nil)
 
         super.init(frame: frameRect)
         setupViews()
@@ -136,14 +139,13 @@ class OverlayView: NSView {
         sessionEndedLabel.isHidden = true
         sessionEndedLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Export audit report button
-        exportButton.bezelStyle = .rounded
-        exportButton.controlSize = .small
-        exportButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        exportButton.isHidden = true
-        exportButton.translatesAutoresizingMaskIntoConstraints = false
-        exportButton.target = self
-        exportButton.action = #selector(exportAuditReport(_:))
+        // Export audit report button (hidden initially, shown when session ends)
+        exportAuditButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        exportAuditButton.bezelStyle = .rounded
+        exportAuditButton.isHidden = true
+        exportAuditButton.translatesAutoresizingMaskIntoConstraints = false
+        exportAuditButton.target = self
+        exportAuditButton.action = #selector(exportAuditReport(_:))
 
         // Privacy indicator: dot + label + toggle
         privacyDot.wantsLayer = true
@@ -181,7 +183,7 @@ class OverlayView: NSView {
         stackView.addArrangedSubview(audioStack)
         stackView.addArrangedSubview(scrollView)
         stackView.addArrangedSubview(sessionEndedLabel)
-        stackView.addArrangedSubview(exportButton)
+        stackView.addArrangedSubview(exportAuditButton)
 
         blurView.addSubview(stackView)
 
@@ -202,6 +204,19 @@ class OverlayView: NSView {
 
         // Hide scroll view initially (pre-session state)
         scrollView.isHidden = true
+
+        // === Interpreter Panic Button (P3.3) ===
+        // Red circular button positioned in the top-right corner.
+        // Visible during live session; hidden in pre-session and ended states.
+        panicButton = InterpreterPanicButton(frame: .zero)
+        panicButton!.translatesAutoresizingMaskIntoConstraints = false
+        panicButton!.isHidden = true
+        addSubview(panicButton!)
+
+        NSLayoutConstraint.activate([
+            panicButton!.topAnchor.constraint(equalTo: blurView.topAnchor, constant: 4),
+            panicButton!.trailingAnchor.constraint(equalTo: blurView.trailingAnchor, constant: -4),
+        ])
     }
 
     // MARK: - Public Interface
@@ -215,7 +230,7 @@ class OverlayView: NSView {
 
     /// Shows a partial segment: English text with "翻译中..." placeholder.
     /// The Mandarin will be filled in later via finalizePartialSegment.
-    func showPartialSegment(chunkIndex: Int, english: String, confidence: Float) {
+    func showPartialSegment(chunkIndex: Int, english: String, confidence: Float, speakerLabel: SpeakerLabel? = nil) {
         DispatchQueue.main.async {
             guard !self.sessionEnded else { return }
             self.showLiveSession()
@@ -230,11 +245,12 @@ class OverlayView: NSView {
                 english: english,
                 mandarin: "翻译中...",   // "Translating..." in Chinese
                 confidence: confidence,
-                isPlaceholder: true   // pulsing animation enabled
+                isPlaceholder: true,   // pulsing animation enabled
+                speakerLabel: speakerLabel
             )
             self.segmentViews[chunkIndex] = segmentView
             self.segmentsStackView.addArrangedSubview(segmentView)
-            self.segments.append(BilingualSegment(english: english, mandarin: "", confidence: confidence))
+            self.segments.append(BilingualSegment(english: english, mandarin: "", confidence: confidence, speakerLabel: speakerLabel))
 
             // Trim old segments
             while self.segmentsStackView.arrangedSubviews.count > self.maxSegments {
@@ -268,8 +284,29 @@ class OverlayView: NSView {
         }
     }
 
+    /// Fills in the Mandarin translation with code-switching markup.
+    /// Protected terms are highlighted in bold, mixed segments are visually distinguished.
+    func finalizePartialSegment(
+        chunkIndex: Int,
+        mandarin: String,
+        protectedTerms: [String],
+        hasCodeSwitching: Bool
+    ) {
+        DispatchQueue.main.async {
+            guard let segmentView = self.segmentViews[chunkIndex] else { return }
+            segmentView.setMandarin(mandarin, protectedTerms: protectedTerms, isMixed: hasCodeSwitching)
+            if let idx = self.segments.firstIndex(where: { $0.english == segmentView.englishText }) {
+                self.segments[idx] = BilingualSegment(
+                    english: self.segments[idx].english,
+                    mandarin: mandarin,
+                    confidence: self.segments[idx].confidence
+                )
+            }
+        }
+    }
+
     /// Appends a fully-resolved bilingual segment (both EN and ZH known).
-    func appendSegment(english: String, mandarin: String, confidence: Float) {
+    func appendSegment(english: String, mandarin: String, confidence: Float, speakerLabel: SpeakerLabel? = nil) {
         DispatchQueue.main.async {
             guard !self.sessionEnded else { return }
             self.showLiveSession()
@@ -284,10 +321,10 @@ class OverlayView: NSView {
                 self.segmentViews.removeValue(forKey: chunkIndex)
             }
 
-            let segmentView = SegmentView(english: english, mandarin: mandarin, confidence: confidence, isPlaceholder: false)
+            let segmentView = SegmentView(english: english, mandarin: mandarin, confidence: confidence, isPlaceholder: false, speakerLabel: speakerLabel)
             self.segmentViews[chunkIndex] = segmentView
             self.segmentsStackView.addArrangedSubview(segmentView)
-            self.segments.append(BilingualSegment(english: english, mandarin: mandarin, confidence: confidence))
+            self.segments.append(BilingualSegment(english: english, mandarin: mandarin, confidence: confidence, speakerLabel: speakerLabel))
 
             // Trim old segments
             while self.segments.count > self.maxSegments {
@@ -313,9 +350,10 @@ class OverlayView: NSView {
             self.sessionEndTimer = nil
             self.scrollView.isHidden = true
             self.privacyRow?.isHidden = true
+            self.panicButton?.isHidden = true  // Hide panic button when session ends
             self.sessionEndedLabel.stringValue = "Session ended"
             self.sessionEndedLabel.isHidden = false
-            self.exportButton.isHidden = false
+            self.exportAuditButton.isHidden = false
 
             // Auto-clear after 10 seconds
             self.sessionEndTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
@@ -332,7 +370,7 @@ class OverlayView: NSView {
             self.sessionEndTimer = nil
             self.sessionEndedLabel.isHidden = true
             self.sessionEndedLabel.stringValue = ""
-            self.exportButton.isHidden = true
+            self.exportAuditButton.isHidden = true
 
             // Remove all segments
             for (_, view) in self.segmentViews {
@@ -351,6 +389,7 @@ class OverlayView: NSView {
             self.preSessionLabel.isHidden = false
             self.scrollView.isHidden = true
             self.privacyRow?.isHidden = true
+            self.panicButton?.isHidden = true  // Reset panic button
         }
     }
 
@@ -360,12 +399,7 @@ class OverlayView: NSView {
         preSessionLabel.isHidden = true
         scrollView.isHidden = false
         privacyRow?.isHidden = false
-    }
-
-    // MARK: - Export Audit Report
-
-    @objc private func exportAuditReport(_ sender: NSButton) {
-        onExportAuditReport?()
+        panicButton?.isHidden = false  // Show interpreter panic button during session
     }
 
     // MARK: - Privacy Toggle
@@ -373,6 +407,11 @@ class OverlayView: NSView {
     @objc private func privacyToggleChanged(_ sender: NSSwitch) {
         privacyModeActive = (sender.state == .on)
         updatePrivacyIndicator()
+    }
+
+    /// Export audit report button action.
+    @objc private func exportAuditReport(_ sender: NSButton) {
+        onExportAuditReport?()
     }
 
     private func updatePrivacyIndicator() {
@@ -402,35 +441,46 @@ struct BilingualSegment {
     let english: String
     let mandarin: String
     let confidence: Float
-
-    /// Annotated English text with bold term ranges (code-switching).
-    var annotatedEnglish: AnnotatedText?
-
-    /// Annotated Mandarin text with bold term ranges (code-switching).
-    var annotatedMandarin: AnnotatedText?
-
-    /// Whether this segment was code-switched (mixed language, bypassed NLLB).
-    var isCodeSwitched: Bool = false
+    /// Speaker label for this segment, if diarization identified a speaker.
+    var speakerLabel: SpeakerLabel?
 }
 
 // MARK: - SegmentView
 
-/// Renders a single bilingual segment: two lines, English above Mandarin.
+/// Renders a single bilingual segment: speaker label + two lines (EN, ZH).
 /// Supports placeholder mode (Mandarin "翻译中..." with pulse animation).
 class SegmentView: NSView {
 
     private let englishLabel: NSTextField
     private let mandarinLabel: NSTextField
     private let confidenceIndicator: NSView
+    private let speakerTagView: NSTextField?
     private var pulseTimer: Timer?
 
     /// The English text of this segment (stored for update matching).
     private(set) var englishText: String = ""
 
-    init(english: String, mandarin: String, confidence: Float, isPlaceholder: Bool = false) {
+    init(english: String, mandarin: String, confidence: Float, isPlaceholder: Bool = false, speakerLabel: SpeakerLabel? = nil) {
         englishLabel = NSTextField(labelWithString: "")
         mandarinLabel = NSTextField(labelWithString: "")
         confidenceIndicator = NSView()
+
+        // Create speaker tag label if a speaker label is provided
+        if let label = speakerLabel {
+            let speakerTag = NSTextField(labelWithString: "")
+            speakerTag.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+            speakerTag.textColor = NSColor(
+                calibratedRed: label.color.redComponent,
+                green: label.color.greenComponent,
+                blue: label.color.blueComponent,
+                alpha: 1.0
+            )
+            speakerTag.stringValue = "\(label.color.emoji) \(label.displayName)"
+            speakerTag.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+            speakerTagView = speakerTag
+        } else {
+            speakerTagView = nil
+        }
 
         super.init(frame: .zero)
 
@@ -443,10 +493,79 @@ class SegmentView: NSView {
 
     /// Replaces the Mandarin label text with the final translation.
     func setMandarin(_ mandarin: String) {
+        setMandarin(mandarin, protectedTerms: [], isMixed: false)
+    }
+
+    /// Replaces the Mandarin label text with code-switching markup.
+    /// - Parameters:
+    ///   - mandarin: The translated text.
+    ///   - protectedTerms: Terms that should be highlighted in bold/special color.
+    ///   - isMixed: Whether this segment contains code-switching (visual distinction).
+    func setMandarin(_ mandarin: String, protectedTerms: [String], isMixed: Bool) {
         pulseTimer?.invalidate()
         pulseTimer = nil
-        mandarinLabel.stringValue = mandarin
-        mandarinLabel.textColor = .white
+
+        if protectedTerms.isEmpty && !isMixed {
+            // Simple case: no markup needed
+            mandarinLabel.stringValue = mandarin
+            mandarinLabel.textColor = .white
+        } else if let attributed = Self.attributedString(
+            text: mandarin,
+            protectedTerms: protectedTerms,
+            isMixed: isMixed
+        ) {
+            mandarinLabel.attributedStringValue = attributed
+            mandarinLabel.textColor = .white  // Fallback; attributed string sets per-range color
+        } else {
+            mandarinLabel.stringValue = mandarin
+            mandarinLabel.textColor = isMixed
+                ? NSColor(red: 0.7, green: 0.85, blue: 1.0, alpha: 1.0)  // Light blue for mixed
+                : .white
+        }
+    }
+
+    // MARK: - Attributed String Builder
+
+    /// Builds an attributed string with protected terms highlighted.
+    /// - Parameters:
+    ///   - text: The full text.
+    ///   - protectedTerms: Terms to highlight in bold yellow.
+    ///   - isMixed: Whether the whole segment is a code-switched mix.
+    /// - Returns: An NSAttributedString with per-term styling, or nil on failure.
+    private static func attributedString(
+        text: String,
+        protectedTerms: [String],
+        isMixed: Bool
+    ) -> NSAttributedString? {
+        let baseColor: NSColor = isMixed
+            ? NSColor(red: 0.7, green: 0.85, blue: 1.0, alpha: 1.0)  // Light blue for mixed segments
+            : .white
+
+        let termColor = NSColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1.0)  // Gold/yellow for terms
+        let termFont = NSFont.systemFont(ofSize: 14, weight: .bold)
+        let baseFont = NSFont.systemFont(ofSize: 14, weight: .regular)
+
+        let result = NSMutableAttributedString(
+            string: text,
+            attributes: [
+                .font: baseFont,
+                .foregroundColor: baseColor
+            ]
+        )
+
+        // Mark each protected term with bold + special color
+        let nsString = text as NSString
+        for term in protectedTerms {
+            let range = nsString.range(of: term, options: .caseInsensitive)
+            if range.location != NSNotFound {
+                result.addAttributes(
+                    [.font: termFont, .foregroundColor: termColor],
+                    range: range
+                )
+            }
+        }
+
+        return result
     }
 
     private func setupView(english: String, mandarin: String, confidence: Float, isPlaceholder: Bool) {
@@ -505,10 +624,33 @@ class SegmentView: NSView {
             confidenceIndicator.heightAnchor.constraint(equalToConstant: dotSize)
         ])
 
-        let mainStack = NSStackView(views: [enRow, zhRow, confidenceIndicator])
-        mainStack.orientation = .horizontal
-        mainStack.alignment = .firstBaseline
-        mainStack.spacing = 8
+        // Build the main content stack (text rows + confidence dot)
+        let textStack = NSStackView(orientation: .vertical)
+        textStack.spacing = 2
+        textStack.alignment = .leading
+        textStack.addArrangedSubview(enRow)
+        textStack.addArrangedSubview(zhRow)
+
+        let mainStack: NSStackView
+        if let speakerTag = speakerTagView {
+            // Layout: [SpeakerTag] [TextStack | ConfidenceDot]
+            let contentWithConf = NSStackView(views: [textStack, confidenceIndicator])
+            contentWithConf.orientation = .horizontal
+            contentWithConf.alignment = .firstBaseline
+            contentWithConf.spacing = 8
+
+            mainStack = NSStackView(views: [speakerTag, contentWithConf])
+            mainStack.orientation = .horizontal
+            mainStack.alignment = .firstBaseline
+            mainStack.spacing = 8
+        } else {
+            // Original layout without speaker tag
+            mainStack = NSStackView(views: [textStack, confidenceIndicator])
+            mainStack.orientation = .horizontal
+            mainStack.alignment = .firstBaseline
+            mainStack.spacing = 8
+        }
+
         mainStack.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(mainStack)
