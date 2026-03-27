@@ -19,6 +19,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var interpreterTimer: Timer?
     private var currentSessionStartTime: Date?
 
+    // Recording + Transcription (P4.3)
+    private var recordingService: RecordingService?
+    private var transcriptionArchiveService: TranscriptionArchiveService?
+    private var transcriptSegments: [TranscriptSegment] = []
+    private var segmentCounter = 0
+    private var sessionStartDate: Date?
+
     // MARK: - App Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -26,6 +33,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupOverlayWindow()
         setupInterpreterFallback()  // P3.3: Wire up panic button
         setupAttestationService()
+        setupRecordingServices()  // P4.3
         requestMicrophonePermission()
     }
 
@@ -36,6 +44,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         interpreterService?.endSession()
         interpreterTimer?.invalidate()
         networkMonitor?.stopMonitoring()
+        // P4.3: Stop recording if active
+        if recordingService?.isRecording == true {
+            Task {
+                _ = try? await recordingService?.stopRecording()
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -55,6 +69,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Start Capture", action: #selector(startCapture), keyEquivalent: "s"))
         menu.addItem(NSMenuItem(title: "Stop Capture", action: #selector(stopCapture), keyEquivalent: "x"))
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Meeting Records", action: #selector(showMeetingRecords), keyEquivalent: "r"))
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         statusItem?.menu = menu
@@ -67,7 +83,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayWindow?.onExportAuditReport = { [weak self] in
             self?.handleExportAuditReport()
         }
+        overlayWindow?.onShowMeetingRecords = { [weak self] in
+            self?.showMeetingRecords()
+        }
         overlayWindow?.orderFront(nil)
+    }
+
+    // MARK: - Recording Services (P4.3)
+
+    private func setupRecordingServices() {
+        recordingService = RecordingService()
+        transcriptionArchiveService = TranscriptionArchiveService()
+        print("Recording services initialized")
     }
 
     // MARK: - Interpreter Fallback (P3.3)
@@ -236,13 +263,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func showMeetingRecords() {
+        // Present the transcript list window
+        let transcriptListWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        transcriptListWindow.title = "Meeting Records"
+        transcriptListWindow.center()
+
+        let transcriptListView = TranscriptListView(
+            archiveService: transcriptionArchiveService!,
+            onExport: { [weak self] transcript, format in
+                self?.handleExportTranscript(transcript, format: format)
+            }
+        )
+        transcriptListWindow.contentView = transcriptListView
+        transcriptListWindow.makeKeyAndOrderFront(nil)
+
+        // Bring app to front
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func handleExportTranscript(_ transcript: MeetingTranscript, format: TranscriptExportFormat) {
+        let exporter = TranscriptExporter()
+
+        let savePanel = NSSavePanel()
+        savePanel.title = "Export Transcript"
+        savePanel.nameFieldStringValue = "\(transcript.sessionId).\(format.fileExtension)"
+        savePanel.allowedContentTypes = [
+            format == .json ? .json : .plainText
+        ]
+        savePanel.canCreateDirectories = true
+
+        savePanel.begin { response in
+            if response == .OK, let url = savePanel.url {
+                do {
+                    try exporter.saveExport(transcript: transcript, format: format, to: url)
+                    print("Transcript exported to \(url.path)")
+                    NSWorkspace.shared.open(url)
+                } catch {
+                    let alert = NSAlert()
+                    alert.messageText = "Export Failed"
+                    alert.informativeText = error.localizedDescription
+                    alert.alertStyle = .critical
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
     @objc private func startCapture() {
         // Start network monitoring for privacy audit
         let sessionStartTime = Date()
         currentSessionStartTime = sessionStartTime
         currentSessionId = UUID().uuidString
+        sessionStartDate = sessionStartTime
         networkMonitor = NetworkMonitor(sessionStartTime: sessionStartTime)
         networkMonitor?.startMonitoring()
+
+        // P4.3: Start recording audio
+        if let sessionId = currentSessionId {
+            Task {
+                do {
+                    try await recordingService?.startRecording(sessionId: sessionId)
+                    print("Recording started for session \(sessionId)")
+                    DispatchQueue.main.async {
+                        self.overlayWindow?.setRecordingActive(true)
+                    }
+                } catch {
+                    print("Failed to start recording: \(error)")
+                }
+            }
+        }
+
+        // P4.3: Reset transcript segments
+        transcriptSegments = []
+        segmentCounter = 0
 
         if audioCaptureService == nil {
             audioCaptureService = AudioCaptureService()
@@ -314,13 +413,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Handle all pipeline events: englishReady via setEnglishReadyHandler,
             // translationCompleted finalizes the partial ZH, others for logging/telemetry.
-            pipelineBridge?.setEventHandler { event in
+            pipelineBridge?.setEventHandler { [weak self] event in
                 switch event {
                 case .translationCompleted(let chunkIndex, let mandarin, _):
                     // Staged reveal: finalize the partial English-only segment with ZH text
                     self?.overlayWindow?.finalizePartialSegment(chunkIndex: chunkIndex, mandarin: mandarin)
                 case .segmentProduced(_, let english, let mandarin, let latency):
                     print("Segment produced (EN→ZH, \(String(format: "%.1f", latency))s): \(english.prefix(30))... → \(mandarin.prefix(20))...")
+                    // P4.3: Collect segment for transcript
+                    self?.collectTranscriptSegment(
+                        english: english,
+                        mandarin: mandarin,
+                        latency: latency
+                    )
                 case .transcriptionFailed(let idx, let error):
                     print("Transcription failed [\(idx)]: \(error)")
                 case .translationFailed(let idx, let error):
@@ -341,12 +446,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // which contains protected terms and mixed-segment info for overlay highlighting.
             // The segment handler fires after translationCompleted, so the overlay view
             // already has the base mandarin text — this applies the markup on top.
-            var segmentCounter = 0
             pipelineBridge?.setSegmentHandler { [weak self] segment in
                 guard let self = self, let csResult = segment.codeSwitchingResult else { return }
                 let protectedTerms = csResult.segments.flatMap { $0.protectedTerms }
-                let chunkIndex = segmentCounter
-                segmentCounter += 1
+                let chunkIndex = self.segmentCounter
+                self.segmentCounter += 1
                 DispatchQueue.main.async {
                     self.overlayWindow.finalizePartialSegment(
                         chunkIndex: chunkIndex,
@@ -386,10 +490,61 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// P4.3: Collects a transcript segment from the pipeline.
+    private func collectTranscriptSegment(english: String, mandarin: String, latency: TimeInterval) {
+        guard let startDate = sessionStartDate else { return }
+
+        let timestamp = Date().timeIntervalSince(startDate)
+        let segment = TranscriptSegment(
+            timestamp: timestamp,
+            duration: latency,
+            originalText: english,
+            translatedText: mandarin,
+            speakerLabel: nil,
+            sourceLanguage: "en",
+            targetLanguage: "zh"
+        )
+        transcriptSegments.append(segment)
+    }
+
     @objc private func stopCapture() {
         audioCaptureService?.stopCapture()
         pipelineBridge?.stop()
         overlayWindow?.endSession()
+
+        // P4.3: Stop recording and save transcript
+        Task { @MainActor in
+            var recordingSession: RecordingSession?
+            do {
+                recordingSession = try await recordingService?.stopRecording()
+                print("Recording stopped")
+            } catch {
+                print("Failed to stop recording: \(error)")
+            }
+
+            // Update overlay: recording stopped
+            self.overlayWindow?.setRecordingActive(false)
+
+            // P4.3: Build and save transcript
+            if let sessionId = self.currentSessionId,
+               let archiveService = self.transcriptionArchiveService,
+               let session = recordingSession {
+                let transcript = MeetingTranscript(
+                    sessionId: sessionId,
+                    sessionDate: session.startTime,
+                    sourceLanguage: "en",
+                    targetLanguage: "zh",
+                    segments: self.transcriptSegments
+                )
+
+                do {
+                    try archiveService.saveTranscript(session: session, transcript: transcript)
+                    print("Transcript saved for session \(sessionId) with \(self.transcriptSegments.count) segments")
+                } catch {
+                    print("Failed to save transcript: \(error)")
+                }
+            }
+        }
 
         // Stop network monitoring and generate attestation
         networkMonitor?.stopMonitoring()
@@ -403,7 +558,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 sessionId: sessionId,
                 startTime: startTime,
                 endTime: Date(),
-                segmentCount: 0,  // Pipeline doesn't expose segment count to AppDelegate yet
+                segmentCount: transcriptSegments.count,
                 networkSummary: summary,
                 networkLog: monitor.activityLog
             )
