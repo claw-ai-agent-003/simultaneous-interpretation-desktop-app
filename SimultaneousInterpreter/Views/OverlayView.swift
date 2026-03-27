@@ -27,6 +27,12 @@ class OverlayView: NSView {
     /// Panic button for human interpreter fallback (P3.3).
     private(set) var panicButton: InterpreterPanicButton?
 
+    /// Language pair switching popup button.
+    private let languageSwitcher: NSPopUpButton
+
+    /// Toolbar row containing language switcher and privacy controls.
+    private var toolbarRow: NSStackView?
+
     // MARK: - State
 
     private var segments: [BilingualSegment] = []
@@ -44,12 +50,21 @@ class OverlayView: NSView {
     /// Callback invoked when the user taps "Export Audit Report".
     var onExportAuditReport: (() -> Void)?
 
+    /// Callback invoked when the user selects a new language pair.
+    var onLanguagePairChanged: ((LanguagePair) -> Void)?
+
     /// Privacy mode is always active in Phase 1 (no actual network monitoring).
     /// The toggle lets users acknowledge they understand local-only processing.
     private var privacyModeActive = true
 
     /// Reference to the privacy row for show/hide.
     private var privacyRow: NSStackView?
+
+    /// Current language pair for display labels.
+    private var currentLanguagePair: LanguagePair = LanguagePair(source: .en, target: .zh)
+
+    /// Supported language pairs for the switcher popup.
+    private var availablePairs: [LanguagePair] = SupportedLanguages.default.pairs
 
     // MARK: - Initialization
 
@@ -67,6 +82,7 @@ class OverlayView: NSView {
         segmentsStackView = NSStackView()
         sessionEndedLabel = NSTextField(labelWithString: "")
         exportAuditButton = NSButton(title: "📄 Export Audit Report", target: nil, action: nil)
+        languageSwitcher = NSPopUpButton(frame: .zero, pullsDown: false)
 
         super.init(frame: frameRect)
         setupViews()
@@ -172,13 +188,40 @@ class OverlayView: NSView {
             privacyDot.heightAnchor.constraint(equalToConstant: 10)
         ])
 
+        // === Language Switcher ===
+        // NSPopUpButton for selecting the active language pair.
+        // Shown only during live sessions.
+        languageSwitcher.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        languageSwitcher.controlSize = .small
+        languageSwitcher.target = self
+        languageSwitcher.action = #selector(languageSwitcherChanged(_:))
+        populateLanguageSwitcher()
+
+        let langLabel = NSTextField(labelWithString: "语言:")
+        langLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        langLabel.textColor = .secondaryLabelColor
+
+        let langRow = NSStackView(views: [langLabel, languageSwitcher])
+        langRow.orientation = .horizontal
+        langRow.spacing = 6
+        langRow.alignment = .centerY
+        langRow.translatesAutoresizingMaskIntoConstraints = false
+
+        // Toolbar row: language switcher on the left, privacy on the right
+        toolbarRow = NSStackView(views: [langRow, privacyRow!])
+        toolbarRow!.orientation = .horizontal
+        toolbarRow!.spacing = 12
+        toolbarRow!.alignment = .centerY
+        toolbarRow!.distribution = .equalSpacing
+        toolbarRow!.translatesAutoresizingMaskIntoConstraints = false
+
         // Main stack
         stackView.orientation = .vertical
         stackView.alignment = .centerX
         stackView.spacing = 12
         stackView.translatesAutoresizingMaskIntoConstraints = false
 
-        stackView.addArrangedSubview(privacyRow!)
+        stackView.addArrangedSubview(toolbarRow!)
         stackView.addArrangedSubview(preSessionLabel)
         stackView.addArrangedSubview(audioStack)
         stackView.addArrangedSubview(scrollView)
@@ -681,3 +724,168 @@ class SegmentView: NSView {
         pulseTimer?.invalidate()
     }
 }
+
+// ============================================================
+// MARK: - ParticipantRowView (P4.2)
+// ============================================================
+
+/// A row view for a participant in the P2P sidebar.
+/// Displays the participant's name, language, headphone icon, and network quality.
+class ParticipantRowView: NSView {
+
+    /// The participant data.
+    private(set) var participant: P2PParticipant
+
+    // UI Components
+    private let avatarView: NSView
+    private let nameLabel: NSTextField
+    private let languageLabel: NSTextField
+    private let headphoneIcon: NSTextField  // 🎧 if receiving, 🔇 if muted/off
+    private let networkQualityDot: NSView
+
+    init(participant: P2PParticipant) {
+        self.participant = participant
+
+        avatarView = NSView()
+        nameLabel = NSTextField(labelWithString: "")
+        languageLabel = NSTextField(labelWithString: "")
+        headphoneIcon = NSTextField(labelWithString: "")
+        networkQualityDot = NSView()
+
+        super.init(frame: .zero)
+
+        setupView()
+        update(with: participant)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setupView() {
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.2).cgColor
+        translatesAutoresizingMaskIntoConstraints = false
+
+        // Avatar circle
+        avatarView.wantsLayer = true
+        avatarView.layer?.cornerRadius = 12
+        avatarView.translatesAutoresizingMaskIntoConstraints = false
+
+        // Name label
+        nameLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        nameLabel.textColor = .white
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        nameLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // Language label with flag
+        languageLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        languageLabel.textColor = .secondaryLabelColor
+        languageLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        // Headphone icon (🎧 receiving audio, 🔇 muted/off)
+        headphoneIcon.font = NSFont.systemFont(ofSize: 11)
+        headphoneIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        // Network quality dot
+        networkQualityDot.wantsLayer = true
+        networkQualityDot.layer?.cornerRadius = 4
+        networkQualityDot.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            avatarView.widthAnchor.constraint(equalToConstant: 24),
+            avatarView.heightAnchor.constraint(equalToConstant: 24),
+
+            headphoneIcon.widthAnchor.constraint(equalToConstant: 16),
+            headphoneIcon.heightAnchor.constraint(equalToConstant: 16),
+
+            networkQualityDot.widthAnchor.constraint(equalToConstant: 8),
+            networkQualityDot.heightAnchor.constraint(equalToConstant: 8),
+
+            heightAnchor.constraint(equalToConstant: 40)
+        ])
+
+        // Build layout
+        // Row: [Avatar][Name][Language][Headphone][NetworkDot]
+        let textStack = NSStackView(views: [nameLabel, languageLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 1
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let mainStack = NSStackView(views: [avatarView, textStack, headphoneIcon, networkQualityDot])
+        mainStack.orientation = .horizontal
+        mainStack.alignment = .centerY
+        mainStack.spacing = 6
+        mainStack.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(mainStack)
+
+        NSLayoutConstraint.activate([
+            mainStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            mainStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            mainStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            mainStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+        ])
+    }
+
+    /// Updates the view with new participant data.
+    /// - Parameter participant: Updated participant data
+    func update(with participant: P2PParticipant) {
+        self.participant = participant
+
+        nameLabel.stringValue = participant.displayName
+
+        // Language with flag emoji
+        let flag = LanguageDisplayName.getFlag(for: participant.preferredLanguage)
+        languageLabel.stringValue = "\(flag) \(participant.preferredLanguageName)"
+
+        // Headphone icon: 🎧 if receiving audio, 🔇 if muted
+        if participant.isMuted {
+            headphoneIcon.stringValue = "🔇"
+        } else if participant.isReceivingAudio {
+            headphoneIcon.stringValue = "🎧"
+        } else {
+            headphoneIcon.stringValue = "📴"
+        }
+
+        // Network quality dot color
+        networkQualityDot.layer?.backgroundColor = NSColor(hexString: participant.networkQuality.colorHex)?.cgColor
+
+        // Avatar color
+        avatarView.layer?.backgroundColor = NSColor(hexString: participant.avatarColor)?.cgColor
+
+        // Role badge (for host)
+        if participant.role == .host {
+            nameLabel.stringValue = "👑 " + participant.displayName
+        }
+    }
+}
+
+// ============================================================
+// MARK: - NSColor Extension for Hex Color
+// ============================================================
+
+extension NSColor {
+    /// Creates an NSColor from a hex string (e.g., "#FF5733" or "FF5733").
+    convenience init?(hexString: String) {
+        var hex = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        if hex.hasPrefix("#") {
+            hex.removeFirst()
+        }
+
+        guard hex.count == 6 else { return nil }
+
+        var rgbValue: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&rgbValue)
+
+        let red = CGFloat((rgbValue & 0xFF0000) >> 16) / 255.0
+        let green = CGFloat((rgbValue & 0x00FF00) >> 8) / 255.0
+        let blue = CGFloat(rgbValue & 0x0000FF) / 255.0
+
+        self.init(red: red, green: green, blue: blue, alpha: 1.0)
+    }
+}
+

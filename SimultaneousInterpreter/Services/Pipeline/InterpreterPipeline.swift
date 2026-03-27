@@ -157,6 +157,12 @@ actor InterpreterPipeline {
     /// Monotonic clock reference at pipeline start.
     private var startTime: UInt64 = 0
 
+    // MARK: - P2P Support (P4.2)
+
+    /// P2P Session Manager reference for broadcasting transcriptions.
+    /// Set via setP2PSessionManager() when joining/creating a P2P session.
+    private var p2pSessionManager: P2PSessionManager?
+
     // MARK: - Callbacks (main-actor isolated)
 
     private var onSegment: (@Sendable (BilingualSegment) -> Void)?
@@ -199,6 +205,69 @@ actor InterpreterPipeline {
     func getDetectedSpeakers() async -> [SpeakerLabel] {
         guard config.diarizationEnabled else { return [] }
         return await diarizationService.getAllSpeakers()
+    }
+
+    // MARK: - P2P Broadcast Interface (P4.2)
+
+    /// Sets the P2P Session Manager for broadcasting transcriptions.
+    /// Call this when the user creates or joins a P2P session.
+    /// - Parameter manager: The P2PSessionManager instance
+    func setP2PSessionManager(_ manager: P2PSessionManager?) {
+        self.p2pSessionManager = manager
+    }
+
+    /// Broadcasts a transcription segment to all P2P participants.
+    /// Called internally when a new bilingual segment is produced.
+    /// Does nothing if P2P mode is not active.
+    ///
+    /// - Parameter segment: The bilingual segment to broadcast
+    func broadcastSegment(_ segment: BilingualSegment) async {
+        guard let p2p = p2pSessionManager,
+              p2p.isInP2PMode,
+              let session = p2p.currentSession else {
+            return
+        }
+
+        // Get local participant ID (host/presenter)
+        let senderId = session.hostId
+
+        // Create a TranscriptionMessage from the BilingualSegment
+        // Note: P2P broadcasts the EN transcription; ParticipantManager handles per-language translation
+        let transcriptionMessage = TranscriptionMessage(
+            senderId: senderId,
+            sessionId: session.sessionId,
+            text: segment.english,
+            confidence: segment.confidence,
+            chunkIndex: chunkIndex - 1,  // Use previous chunk index since this is the result
+            startTimestamp: segment.producedAt,
+            durationSeconds: segment.durationSeconds,
+            speakerLabel: segment.speakerLabel?.displayName
+        )
+
+        // Broadcast through DataChannel
+        await p2p.broadcastSegment(transcriptionMessage)
+    }
+
+    /// Broadcasts a partial (in-progress) transcription segment.
+    /// Used for real-time partial captions while Whisper is still processing.
+    ///
+    /// - Parameters:
+    ///   - text: Partial transcription text
+    ///   - chunkIndex: Current chunk index
+    func broadcastPartialSegment(_ text: String, chunkIndex: Int) async {
+        guard let p2p = p2pSessionManager,
+              p2p.isInP2PMode,
+              let session = p2p.currentSession else {
+            return
+        }
+
+        let senderId = session.hostId
+        await p2p.broadcastPartialTranscription(text: text, chunkIndex: chunkIndex, senderId: senderId)
+    }
+
+    /// Checks whether P2P broadcast is enabled.
+    var isP2PBroadcastEnabled: Bool {
+        p2pSessionManager != nil && (p2pSessionManager?.isInP2PMode ?? false)
     }
 
     /// Starts the pipeline.
@@ -579,6 +648,11 @@ actor InterpreterPipeline {
         guard let handler = onSegment else { return }
         Task { @MainActor in
             handler(segment)
+        }
+
+        // P4.2: Broadcast to P2P participants if in P2P mode
+        Task {
+            await broadcastSegment(segment)
         }
     }
 
