@@ -52,9 +52,31 @@ class OverlayWindow: NSWindow {
         overlayView.finalizePartialSegment(chunkIndex: chunkIndex, mandarin: mandarin)
     }
 
+    /// Fills in the Mandarin translation with code-switching markup.
+    /// Protected terms are highlighted in bold, mixed segments visually distinguished.
+    func finalizePartialSegment(
+        chunkIndex: Int,
+        mandarin: String,
+        protectedTerms: [String],
+        hasCodeSwitching: Bool
+    ) {
+        overlayView.finalizePartialSegment(
+            chunkIndex: chunkIndex,
+            mandarin: mandarin,
+            protectedTerms: protectedTerms,
+            hasCodeSwitching: hasCodeSwitching
+        )
+    }
+
     /// Shows a fully-resolved bilingual segment (both EN and ZH known).
     func showSegment(english: String, mandarin: String, confidence: Float) {
         overlayView.appendSegment(english: english, mandarin: mandarin, confidence: confidence)
+    }
+
+    /// Callback invoked when the user taps "Export Audit Report".
+    var onExportAuditReport: (() -> Void)? {
+        get { overlayView.onExportAuditReport }
+        set { overlayView.onExportAuditReport = newValue }
     }
 
     /// Ends the session: shows "Session ended" message, freezes final segment.
@@ -65,5 +87,15 @@ class OverlayWindow: NSWindow {
     /// Clears the session and resets to pre-session state.
     func clearSession() {
         overlayView.clearSessionEnded()
+    }
+
+    /// Access the panic button for interpreter fallback binding.
+    func getPanicButton() -> InterpreterPanicButton? {
+        overlayView.panicButton
+    }
+
+    /// Update the panic button call timer display.
+    func updatePanicButtonTimer(_ duration: String) {
+        overlayView.panicButton?.updateTimer(duration)
     }
 }

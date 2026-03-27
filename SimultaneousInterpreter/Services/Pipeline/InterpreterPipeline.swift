@@ -20,6 +20,9 @@ struct BilingualSegment: Sendable {
 
     /// Monotonic timestamp when this segment was produced.
     let producedAt: UInt64
+
+    /// Speaker label for this segment, if diarization is active.
+    var speakerLabel: SpeakerLabel?
 }
 
 // ============================================================
@@ -51,6 +54,12 @@ struct PipelineConfig: Sendable {
 
     /// Target end-to-end latency budget (seconds).
     var targetLatencySeconds: Double = 3.0
+
+    /// Whether speaker diarization is enabled.
+    var diarizationEnabled: Bool = true
+
+    /// Configuration for speaker diarization.
+    var diarizationConfig: DiarizationConfig = DiarizationConfig()
 }
 
 // ============================================================
