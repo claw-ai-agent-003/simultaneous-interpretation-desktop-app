@@ -12,6 +12,9 @@ packages:
   MLX:
     url: https://github.com/ml-explore/mlx-swift
     version: 0.31.1
+  GoogleWebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    version: 126.0.0
 
 settings:
   base:
@@ -32,6 +35,7 @@ targets:
       - SimultaneousInterpreter
     dependencies:
       - package: MLX
+      - package: GoogleWebRTC
     settings:
       base:
         INFOPLIST_FILE: SimultaneousInterpreter/Resources/Info.plist
