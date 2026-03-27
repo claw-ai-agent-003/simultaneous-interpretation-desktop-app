@@ -3,30 +3,26 @@ import Foundation
 // MARK: - 转录服务
 /// 负责消费 WiFiSyncService 接收到的数据
 /// 提供会议记录管理和摘要存储能力
-actor TranscriptionService {
+@Observable
+final class TranscriptionService {
 
     // MARK: - 私有属性
 
     /// 当前进行中的会议记录
-    private var currentSession: MeetingRecord?
+    private(set) var currentSession: MeetingRecord?
 
     /// 片段缓冲区（按序号排序）
     private var segmentBuffer: [Int: LiveSegmentMessage] = [:]
 
     /// 历史会议记录列表
-    private var meetingHistory: [MeetingRecord] = []
+    private(set) var meetingHistory: [MeetingRecord] = []
 
     /// 本地存储路径
     private let storageURL: URL
 
-    /// WiFi 同步服务引用
-    private let syncService: WiFiSyncService
-
     // MARK: - 初始化
 
-    init(syncService: WiFiSyncService) {
-        self.syncService = syncService
-
+    init() {
         // 初始化存储路径
         let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         self.storageURL = documentsPath.appendingPathComponent("MeetingRecords", isDirectory: true)
@@ -35,9 +31,7 @@ actor TranscriptionService {
         try? FileManager.default.createDirectory(at: storageURL, withIntermediateDirectories: true)
 
         // 加载历史记录
-        Task {
-            await loadHistory()
-        }
+        loadHistory()
     }
 
     // MARK: - 公开方法
@@ -92,7 +86,7 @@ actor TranscriptionService {
         // 更新会议结束时间
         if var session = currentSession, session.sessionId == message.sessionId {
             session.endTime = Date(timeIntervalSince1970: message.endTime)
-            currentSession = session
+            self.currentSession = session
 
             // 保存到历史记录
             saveMeeting(session)
@@ -108,7 +102,7 @@ actor TranscriptionService {
     func handleMeetingBrief(_ message: MeetingBriefMessage) {
         if var session = currentSession, session.sessionId == message.sessionId {
             session.brief = message
-            currentSession = session
+            self.currentSession = session
 
             // 更新历史记录中的摘要
             if let index = meetingHistory.firstIndex(where: { $0.sessionId == message.sessionId }) {
@@ -170,7 +164,7 @@ actor TranscriptionService {
             }
         }
 
-        currentSession = session
+        self.currentSession = session
 
         // 强制刷新时清空缓冲区
         if force {

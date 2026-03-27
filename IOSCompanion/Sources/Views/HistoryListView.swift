@@ -4,8 +4,8 @@ import SwiftUI
 /// 展示过往所有会议的记录列表，支持搜索和删除
 struct HistoryListView: View {
 
-    /// 环境中的 WiFi 同步服务
-    @Environment(WiFiSyncService.self) private var syncService
+    /// 转录服务
+    let transcriptionService: TranscriptionService
 
     /// 搜索关键词
     @State private var searchText: String = ""
@@ -42,9 +42,6 @@ struct HistoryListView: View {
         }
         .onAppear {
             loadHistory()
-        }
-        .onChange(of: searchText) { _, _ in
-            // 搜索过滤（实际由 filteredMeetings computed property 处理）
         }
     }
 
@@ -128,16 +125,14 @@ struct HistoryListView: View {
 
     /// 加载历史记录
     private func loadHistory() {
-        // TODO: 从 TranscriptionService 获取历史记录
-        // 暂时使用占位数据
-        meetings = []
+        meetings = transcriptionService.getHistory()
     }
 
     /// 删除会议
     /// - Parameter meeting: 要删除的会议
     private func deleteMeeting(_ meeting: MeetingRecord) {
-        meetings.removeAll { $0.id == meeting.id }
-        // TODO: 调用 TranscriptionService.deleteMeeting(meeting.sessionId)
+        transcriptionService.deleteMeeting(sessionId: meeting.sessionId)
+        meetings = transcriptionService.getHistory()
     }
 }
 
@@ -385,6 +380,5 @@ struct MeetingDetailView: View {
 // MARK: - 预览
 
 #Preview {
-    HistoryListView()
-        .environment(WiFiSyncService())
+    HistoryListView(transcriptionService: TranscriptionService())
 }

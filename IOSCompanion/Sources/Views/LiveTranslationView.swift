@@ -10,8 +10,11 @@ import SwiftUI
 /// - 当前说话人高亮
 struct LiveTranslationView: View {
 
-    /// 环境中的 WiFi 同步服务
-    @Environment(WiFiSyncService.self) private var syncService
+    /// WiFi 同步服务
+    let syncService: WiFiSyncService
+
+    /// 转录服务
+    let transcriptionService: TranscriptionService
 
     /// 当前连接状态
     @State private var connectionStatus: ConnectionStatus = .disconnected
@@ -230,24 +233,38 @@ struct LiveTranslationView: View {
 
     /// 观察 syncService 的数据变化
     private func observeSyncService() {
-        Task { @MainActor in
-            // 监听最新片段
-            for await _ in Timer.publish(every: 0.5, on: .main, in: .common).autoconnect().values {
-                if let latest = await syncService.latestSegment {
-                    if let lastIndex = segments.lastIndex(where: { $0.segmentIndex == latest.segmentIndex }) {
-                        // 更新现有片段
-                        segments[lastIndex] = latest
-                    } else {
-                        // 添加新片段
+        // 监听最新片段变化
+        if let latest = syncService.latestSegment {
+            if !segments.contains(where: { $0.segmentIndex == latest.segmentIndex }) {
+                segments.append(latest)
+            }
+        }
+
+        // 同步连接状态
+        connectionStatus = syncService.connectionStatus
+
+        // 同步会议名称
+        if let peerName = syncService.connectedPeerName {
+            currentMeetingName = "与 \(peerName) 的会议"
+        } else {
+            currentMeetingName = "未连接会议"
+        }
+
+        // 使用 Timer 定期检查更新
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            Task { @MainActor in
+                // 检查最新片段
+                if let latest = syncService.latestSegment {
+                    if !segments.contains(where: { $0.segmentIndex == latest.segmentIndex }) {
                         segments.append(latest)
                     }
                 }
 
                 // 同步连接状态
-                connectionStatus = await syncService.connectionStatus
+                connectionStatus = syncService.connectionStatus
 
                 // 同步会议名称
-                if let peerName = await syncService.connectedPeerName {
+                if let peerName = syncService.connectedPeerName {
                     currentMeetingName = "与 \(peerName) 的会议"
                 } else {
                     currentMeetingName = "未连接会议"
@@ -260,6 +277,8 @@ struct LiveTranslationView: View {
 // MARK: - 预览
 
 #Preview {
-    LiveTranslationView()
-        .environment(WiFiSyncService())
+    LiveTranslationView(
+        syncService: WiFiSyncService(),
+        transcriptionService: TranscriptionService()
+    )
 }

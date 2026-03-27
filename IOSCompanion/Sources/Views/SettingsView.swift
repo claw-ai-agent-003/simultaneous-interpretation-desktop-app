@@ -4,8 +4,8 @@ import SwiftUI
 /// 管理应用的各种设置选项
 struct SettingsView: View {
 
-    /// 环境中的 WiFi 同步服务
-    @Environment(WiFiSyncService.self) private var syncService
+    /// WiFi 同步服务
+    let syncService: WiFiSyncService
 
     /// 当前连接状态
     @State private var connectionStatus: ConnectionStatus = .disconnected
@@ -64,6 +64,9 @@ struct SettingsView: View {
                     selectedLanguage: languagePickerType == .source ? $sourceLanguage : $targetLanguage,
                     title: languagePickerType == .source ? "选择源语言" : "选择目标语言"
                 )
+            }
+            .onAppear {
+                observeSyncService()
             }
         }
     }
@@ -283,19 +286,29 @@ struct SettingsView: View {
 
     // MARK: - 操作方法
 
+    /// 观察 syncService 状态
+    private func observeSyncService() {
+        connectionStatus = syncService.connectionStatus
+        connectedMacName = syncService.connectedPeerName
+
+        // 定期更新
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            Task { @MainActor in
+                connectionStatus = syncService.connectionStatus
+                connectedMacName = syncService.connectedPeerName
+            }
+        }
+    }
+
     /// 搜索并连接 Mac
     private func searchForMac() {
-        Task {
-            await syncService.startListening()
-        }
+        syncService.startListening()
     }
 
     /// 断开与 Mac 的连接
     private func disconnectFromMac() {
-        Task {
-            await syncService.stopListening()
-            connectedMacName = nil
-        }
+        syncService.stopListening()
+        connectedMacName = nil
     }
 }
 
@@ -476,6 +489,5 @@ struct HelpItem: View {
 // MARK: - 预览
 
 #Preview {
-    SettingsView()
-        .environment(WiFiSyncService())
+    SettingsView(syncService: WiFiSyncService())
 }

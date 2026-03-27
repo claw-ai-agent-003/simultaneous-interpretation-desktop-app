@@ -11,8 +11,8 @@ struct MeetingBriefView: View {
     /// 会议标题（可选，用于显示在导航栏）
     let meetingTitle: String?
 
-    /// 环境中的 WiFi 同步服务
-    @Environment(WiFiSyncService.self) private var syncService
+    /// WiFi 同步服务
+    let syncService: WiFiSyncService
 
     /// 是否已收藏此摘要
     @State private var isBookmarked = false
@@ -368,7 +368,8 @@ private enum DisplayMode {
                 participants: ["张三", "李四", "王五", "赵六"],
                 generatedAt: Date().timeIntervalSince1970
             ),
-            meetingTitle: "产品评审会议"
+            meetingTitle: "产品评审会议",
+            syncService: WiFiSyncService()
         )
     }
 }
