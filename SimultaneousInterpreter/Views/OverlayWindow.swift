@@ -79,6 +79,17 @@ class OverlayWindow: NSWindow {
         set { overlayView.onExportAuditReport = newValue }
     }
 
+    /// P4.3: Callback invoked when the user taps "Meeting Records".
+    var onShowMeetingRecords: (() -> Void)? {
+        get { overlayView.onShowMeetingRecords }
+        set { overlayView.onShowMeetingRecords = newValue }
+    }
+
+    /// P4.3: Sets recording active state on the overlay.
+    func setRecordingActive(_ active: Bool) {
+        overlayView.setRecordingActive(active)
+    }
+
     /// Ends the session: shows "Session ended" message, freezes final segment.
     func endSession() {
         overlayView.endSession()
