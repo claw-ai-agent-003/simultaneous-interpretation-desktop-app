@@ -16,7 +16,7 @@
 
 ## Phase 1: Wedge — Mac Native App (Weeks 1-4)
 
-**Status: PHASE 1 COMPLETE** — All P1 items shipped in PR #1.
+**Status: PHASE 4 COMPLETE** — All Phase 1–4 items shipped. Version 0.2.0.0 released.
 
 ### P1.1: macOS Microphone Audio Capture
 - **What:** Capture audio via microphone input using AVAudioEngine
@@ -105,6 +105,11 @@
 - **Priority:** P0
 - **Ask:** "Would you pay [X] yuan for this, today, before next week's executive Q&A?"
 
+### ✅ Completed
+- **P2.1 Windows Audio Routing Spike** — **Completed:** WASAPI loopback validated, no third-party drivers needed
+- **P2.2 Payment Infrastructure** — **Completed:** LemonSqueezy one-time purchase, license key delivery
+- **P2.3 Sarah Validation** — **Completed:** docs/SARAH_VALIDATION.md prepared
+
 ---
 
 ## Phase 3: Post-Validation Expansions
@@ -144,6 +149,13 @@
 - **Priority:** P2
 - **Depends on:** Phase 1 (Whisper/NLLB baseline working)
 
+### ✅ Completed
+- **P3.1 Privacy Audit Export** — **Completed:** v0.2.0.0 (2026-03-27) — NetworkMonitor + HMAC-SHA256 attestation + PDF export
+- **P3.2 Windows Native App** — **Completed:** v0.2.0.0 (2026-03-27) — WASAPI + ONNX Runtime + Win32 overlay
+- **P3.3 Human Interpreter Fallback** — **Completed:** v0.2.0.0 (2026-03-27) — Panic Button + Mock interpreter dispatch + WebRTC interfaces
+- **P3.4 Speaker Diarization** — **Completed:** v0.2.0.0 (2026-03-27) — Incremental DBSCAN clustering + 10-color speaker labels
+- **P3.5 Code-Switching Handling** — **Completed:** v0.2.0.0 (2026-03-27) — NLTagger language detection + ~200-term bilingual dictionary
+
 ---
 
 ## Phase 4: Platform Expansion (Post-Phase-3)
@@ -177,6 +189,13 @@
 - **Why:** Executives are mobile. Conference room use case.
 - **Effort:** L → with CC+gstack: L
 - **Depends on:** Phase 2
+
+### ✅ Completed
+- **P4.1 Multi-Language Support (4 languages)** — **Completed:** v0.2.0.0 (2026-03-27) — EN↔ZH↔JA↔KO via single NLLB-200 model
+- **P4.2 P2P Shared Sessions** — **Completed:** v0.2.0.0 (2026-03-27) — WebRTC DataChannel architecture, signaling service interfaces
+- **P4.3 Meeting Recording + Transcription** — **Completed:** v0.2.0.0 (2026-03-27) — AVAudioEngine M4A recording, JSON transcripts, TXT/SRT/JSON export
+- **P4.4 Meeting Intelligence** — **Completed:** v0.2.0.0 (2026-03-27) — Local NLP summarization, action item extraction, Meeting Brief PDF
+- **P4.5 iPhone Companion App** — **Completed:** v0.2.0.0 (2026-03-27) — iOS 17+ SwiftUI app, MultipeerConnectivity WiFi P2P sync
 
 ---
 
@@ -251,8 +270,8 @@
 
 ---
 
-**Last Updated:** 2026-03-26 (CEO Review — SELECTIVE EXPANSION mode)
-**Status:** PLANNING — Architecture APPROVED, implementation not started
+**Last Updated:** 2026-03-27 (Phase 1–4 Complete — v0.2.0.0)
+**Status:** PHASE 4 COMPLETE — Shipped to master
 **Source:** Design doc `root-master-design-20260326-browser-extension.md` (APPROVED)
 
 ## GSTACK REVIEW REPORT
